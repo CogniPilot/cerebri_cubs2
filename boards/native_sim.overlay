@@ -1,0 +1,3 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/* CUBS2 native_sim receives flight inputs through csyn/Zenoh, not fake devices. */

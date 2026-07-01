@@ -1,0 +1,3 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/* CUBS2 uses the board Ethernet device and receives all flight inputs over Zenoh. */

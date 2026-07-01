@@ -1,0 +1,32 @@
+source "Kconfig.zephyr"
+
+menu "CUBS2"
+
+config CUBS2_MANUAL_OVERRIDE
+	bool "Select manual or autonomous RC output from incoming RC switch"
+	default y
+	help
+	  Mirror the CUBS2 fixed-wing bridge behavior: keep both the incoming
+	  manual RC channels and the generated autonomous channels, then publish
+	  manual channels when the mode switch is low and autonomous channels
+	  when the mode switch is high. If manual channels or the switch do not
+	  look like valid PWM values, the controller stays on autonomous output.
+
+config CUBS2_AUTO_SWITCH_CHANNEL
+	int "Incoming RC channel index used for manual/autonomous switch"
+	depends on CUBS2_MANUAL_OVERRIDE
+	default 5
+	range 0 15
+	help
+	  Zero-based internal PWM channel index used as the source mode switch.
+
+config CUBS2_AUTO_SWITCH_THRESHOLD_US
+	int "Manual/autonomous switch PWM threshold"
+	depends on CUBS2_MANUAL_OVERRIDE
+	default 1500
+	range 1000 2000
+	help
+	  Switch values above this threshold select autonomous output. Values at
+	  or below this threshold select manual passthrough.
+
+endmenu
