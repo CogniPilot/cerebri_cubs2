@@ -3,10 +3,23 @@
 // Fixed-wing outer-loop autopilot for the HobbyZone Sport Cub S2.
 //
 // This fixed-period sampled model is the source for Rumoca eFMI Production Code.
-// Keep it self-contained: the GALEC backend currently accepts static vector
-// component access and component blocks used as state/config namespaces, but not
-// dynamic array subscripts, user-defined helper functions, or component blocks
-// with their own equations/sample ticks.
+// Keep it self-contained: helper functions and vector expressions below are
+// intentionally part of this one Modelica source so the generated eFMU has a
+// single, inspectable control model.
+
+function vectorNorm2
+  input Real v[2];
+  output Real result;
+algorithm
+  result := sqrt(v * v);
+end vectorNorm2;
+
+function vectorNorm3
+  input Real v[3];
+  output Real result;
+algorithm
+  result := sqrt(v * v);
+end vectorNorm3;
 
 // Rumoca v0.9.11 cannot lower component blocks that own equations or sample()
 // conditions to GALEC production code, so this block holds reusable PID tuning
@@ -64,8 +77,7 @@ model FixedWingOuterLoop
     parameter Real g(unit = "m/s2") = 9.81 "standard gravity";
 
     // PURT circuit, constant 3 m altitude.
-    parameter Integer nWaypoints = 6;
-    parameter Real home[3] = {0.0, 0.0, 0.0} "origin waypoint [x, y, z] [m]";
+    constant Integer nWaypoints = 6;
     parameter Real waypoints[nWaypoints, 3] = [
       -4.0,  -5.0,  3.0;
       -3.0,   2.0,  3.0;
@@ -73,6 +85,13 @@ model FixedWingOuterLoop
       16.0,  -4.22, 3.0;
       6.88,  -5.1,  3.0;
       -4.0,  -5.0,  3.0] "waypoint rows are [x, y, z] [m]";
+    parameter Real segment_start[nWaypoints, 3] = [
+      0.0,    0.0,  0.0;
+      -4.0,  -5.0,  3.0;
+      -3.0,   2.0,  3.0;
+      16.20,  2.0,  3.0;
+      16.0,  -4.22, 3.0;
+      6.88,  -5.1,  3.0] "path segment start rows by current_wp [x, y, z] [m]";
 
     // Estimator and waypoint guidance.
     parameter Real filterCutoffHz(unit = "Hz") = 10.0;
@@ -119,7 +138,8 @@ model FixedWingOuterLoop
     discrete output Real rudder(start = 0.0);
     discrete output Real stabilizer(start = 2000.0);
     discrete output Boolean airborne(start = false);
-    discrete output Integer current_wp(start = 1);
+    // Literal max is required until Rumoca proves bounds through nWaypoints.
+    discrete output Integer current_wp(min = 1, max = 6, start = 1);
     discrete output Real des_v(start = 0.0);
     discrete output Real des_gamma(start = 0.0);
     discrete output Real des_heading(start = 0.0);
@@ -183,9 +203,7 @@ model FixedWingOuterLoop
         euler_rate_new_rad_s[i] := atan2(sin(euler_rad[i] - pre(prev_euler_rad[i])),
                                          cos(euler_rad[i] - pre(prev_euler_rad[i]))) / dt;
       end for;
-      speed_new := sqrt(velocity_new_m_s[1] * velocity_new_m_s[1]
-                        + velocity_new_m_s[2] * velocity_new_m_s[2]
-                        + velocity_new_m_s[3] * velocity_new_m_s[3]);
+      speed_new := vectorNorm3(velocity_new_m_s);
       gamma_new := asin(min(max(velocity_new_m_s[3] / max(speed_new, 1e-5), -1.0), 1.0));
       vdot_new := speed_new - pre(prev_speed);       // prev_speed := previous v_est
 
@@ -202,43 +220,28 @@ model FixedWingOuterLoop
       vdot_est := alpha * vdot_new + (1.0 - alpha) * pre(vdot_est);
     end if;
 
-      // Select the active path segment. The direct form
-      // `waypoints[current_wp, :]` is the desired Modelica, but Rumoca v0.9.11
-      // only accepts array subscripts from loop iterators here.
-      next_wp := home;
-      prev_wp := home;
-      for i in 1:nWaypoints loop
-        if current_wp == i then
-          for j in 1:3 loop
-            next_wp[j] := waypoints[i, j];
-          end for;
-        end if;
-      end for;
-      for i in 1:nWaypoints - 1 loop
-        if current_wp == i + 1 then
-          for j in 1:3 loop
-            prev_wp[j] := waypoints[i, j];
-          end for;
-        end if;
-      end for;
+      // Select the active path segment directly by bounded waypoint index.
+      prev_wp := {segment_start[current_wp, 1],
+                  segment_start[current_wp, 2],
+                  segment_start[current_wp, 3]};
+      next_wp := {waypoints[current_wp, 1],
+                  waypoints[current_wp, 2],
+                  waypoints[current_wp, 3]};
 
-      position_error := {next_wp[1] - position_est_m[1],
-                         next_wp[2] - position_est_m[2],
-                         next_wp[3] - position_est_m[3]};
-      horz_dist_err := sqrt(position_error[1] * position_error[1]
-                            + position_error[2] * position_error[2]);
-      path := {next_wp[1] - prev_wp[1], next_wp[2] - prev_wp[2], next_wp[3] - prev_wp[3]};
-      path_len := max(sqrt(path[1]^2 + path[2]^2 + path[3]^2), 1e-6);
+      position_error := next_wp - position_est_m;
+      horz_dist_err := vectorNorm2({position_error[1], position_error[2]});
+      path := next_wp - prev_wp;
+      path_len := max(vectorNorm3(path), 1e-6);
       path_angle := atan2(path[2], path[1]);
       path_unit := {path[1] / path_len, path[2] / path_len};
-      path_normal := {-path[2] / path_len, path[1] / path_len};
+      path_normal := {-path_unit[2], path_unit[1]};
       pose_from_prev := {position_est_m[1] - prev_wp[1], position_est_m[2] - prev_wp[2]};
-      along_track_err_w0 := pose_from_prev[1] * path_unit[1]
-                            + pose_from_prev[2] * path_unit[2];
+      along_track_err_w0 := pose_from_prev * path_unit;
       along_track_err_w1 := max(0.0, path_len - min(max(along_track_err_w0, 0.0), path_len));
-      cross_track_err := pose_from_prev[1] * path_normal[1] + pose_from_prev[2] * path_normal[2];
-      lookahead_nom := min(max(sqrt(velocity_est_m_s[1]^2 + velocity_est_m_s[2]^2)
-                               * lookaheadTime, lookaheadMin), lookaheadMax);
+      cross_track_err := pose_from_prev * path_normal;
+      lookahead_nom := min(max(vectorNorm2({velocity_est_m_s[1], velocity_est_m_s[2]})
+                               * lookaheadTime,
+                               lookaheadMin), lookaheadMax);
       lookahead_eff := max(lookaheadMin, min(lookahead_nom, along_track_err_w1));
       lookahead_heading := path_angle + atan2(-cross_track_err, max(lookahead_eff, 1e-6));
 

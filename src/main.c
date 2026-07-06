@@ -6,7 +6,6 @@
 #include <csyn/csyn_zros.h>
 
 #include "FixedWingOuterLoop.h"
-#include "efmi_wrapper.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -247,6 +246,7 @@ int main(void)
 
 	*ctx = (struct control_context){0};
 	EFMI_INIT(FixedWingOuterLoop, &g_model);
+	EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
 
 	rc = control_pubs_init();
 	if (rc != 0) {
@@ -266,6 +266,7 @@ int main(void)
 		auto_mode = auto_mode_selected(ctx);
 		if (auto_mode && !ctx->previous_auto_mode) {
 			EFMI_INIT(FixedWingOuterLoop, &g_model);
+			EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
 		}
 		ctx->previous_auto_mode = auto_mode;
 
