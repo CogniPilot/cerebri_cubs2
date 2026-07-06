@@ -205,6 +205,7 @@
                 modules/hal/nxp \
                 modules/lib/zenoh-pico \
                 modules/lib/zros \
+                modules/lib/csyn \
                 modules/lib/zephyr_boards
               do
                 if [ ! -d "$workspace/$path" ]; then
@@ -214,7 +215,7 @@
               done
 
               if [ "$missing" -ne 0 ]; then
-                printf 'run from the app checkout: nix run ./nix#west-update\n' >&2
+                printf 'run from the app checkout: nix run .#west-update\n' >&2
                 return 1
               fi
             }
@@ -245,7 +246,7 @@
 
               if [ ! -d "$workspace/.west" ]; then
                 printf 'error: missing west workspace metadata at %s/.west\n' "$workspace" >&2
-                printf 'initialize/update it with: nix run ./nix#west-update\n' >&2
+                printf 'initialize/update it with: nix run .#west-update\n' >&2
                 return 1
               fi
 
@@ -261,13 +262,13 @@
                  [ "''${CUBS2_ALLOW_FOREIGN_WEST:-0}" != "1" ]; then
                 printf 'error: active west manifest is %s\n' "$actual_manifest" >&2
                 printf '       cerebri_cubs2 expects %s\n' "$expected_manifest" >&2
-                printf 'run nix run ./nix#west-update to create/update the managed cerebri_cubs2 workspace\n' >&2
+                printf 'run nix run .#west-update to create/update the managed cerebri_cubs2 workspace\n' >&2
                 return 1
               fi
 
               if [ -z "''${ZEPHYR_BASE:-}" ] || [ ! -d "$ZEPHYR_BASE" ]; then
                 printf 'error: missing Zephyr checkout; expected %s/zephyr or ZEPHYR_BASE\n' "$workspace" >&2
-                printf 'run from the app checkout: nix run ./nix#west-update\n' >&2
+                printf 'run from the app checkout: nix run .#west-update\n' >&2
                 return 1
               fi
 
@@ -540,7 +541,93 @@
         }
       );
 
-      nixosModules.default = import ./nixos-module.nix { inherit self; };
+      nixosModules.default =
+        {
+          config,
+          lib,
+          pkgs,
+          ...
+        }:
+        let
+          cfg = config.programs.cerebri-cubs2;
+          system = pkgs.stdenv.hostPlatform.system;
+          hostTools = self.packages.${system}.host-tools;
+        in
+        {
+          options.programs.cerebri-cubs2 = {
+            enable = lib.mkEnableOption "host tools and device access for cerebri_cubs2 development";
+
+            users = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              example = [ "alice" ];
+              description = "Local users that should be allowed to access serial ports and debug probes.";
+            };
+
+            probeGroup = lib.mkOption {
+              type = lib.types.str;
+              default = "dialout";
+              description = "Group assigned to supported USB debug probes.";
+            };
+
+            enableUdevRules = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = "Install udev rules for common MIMXRT1064 debug and serial adapters.";
+            };
+
+            enableNixSettings = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = "Enable the Nix CLI features required by this flake and select a recent Nix package by default.";
+            };
+
+            nixPackage = lib.mkOption {
+              type = lib.types.package;
+              default = pkgs.nixVersions.latest;
+              defaultText = lib.literalExpression "pkgs.nixVersions.latest";
+              description = "Nix package to use when enableNixSettings is true.";
+            };
+          };
+
+          config = lib.mkIf cfg.enable {
+            nix = lib.mkIf cfg.enableNixSettings {
+              package = lib.mkDefault cfg.nixPackage;
+              settings.experimental-features = [
+                "nix-command"
+                "flakes"
+              ];
+            };
+
+            environment.systemPackages = [ hostTools ];
+
+            users.groups.${cfg.probeGroup} = { };
+
+            users.users = lib.genAttrs cfg.users (_: {
+              extraGroups = [
+                cfg.probeGroup
+                "dialout"
+              ];
+            });
+
+            services.udev.extraRules = lib.mkIf cfg.enableUdevRules ''
+              # SEGGER J-Link
+              SUBSYSTEM=="usb", ATTR{idVendor}=="1366", MODE="0660", GROUP="${cfg.probeGroup}", TAG+="uaccess"
+
+              # ARM/DAPLink CMSIS-DAP probes
+              SUBSYSTEM=="usb", ATTR{idVendor}=="0d28", MODE="0660", GROUP="${cfg.probeGroup}", TAG+="uaccess"
+
+              # NXP ROM bootloader and MCU-Link family
+              SUBSYSTEM=="usb", ATTR{idVendor}=="1fc9", MODE="0660", GROUP="${cfg.probeGroup}", TAG+="uaccess"
+              SUBSYSTEM=="usb", ATTR{idVendor}=="15a2", MODE="0660", GROUP="${cfg.probeGroup}", TAG+="uaccess"
+
+              # Common USB serial adapters used during bench bring-up
+              SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", MODE="0660", GROUP="dialout", TAG+="uaccess"
+              SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", MODE="0660", GROUP="dialout", TAG+="uaccess"
+              SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", MODE="0660", GROUP="dialout", TAG+="uaccess"
+            '';
+          };
+        };
       nixosModules.cerebri-cubs2 = self.nixosModules.default;
     };
 }

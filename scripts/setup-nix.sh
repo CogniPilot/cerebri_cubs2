@@ -4,7 +4,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-flake_dir="$repo_root/nix"
+flake_dir="$repo_root"
 nix_conf_dir="${XDG_CONFIG_HOME:-$HOME/.config}/nix"
 nix_conf="$nix_conf_dir/nix.conf"
 
@@ -159,9 +159,9 @@ main() {
 
   log "Nix is ready: $(nix --version)"
   log "Next:"
-  log "  nix develop ./nix"
-  log "  nix run ./nix#west-update"
-  log "  nix run ./nix#build"
+  log "  nix develop"
+  log "  nix run .#west-update"
+  log "  nix run .#build"
 }
 
 main "$@"
