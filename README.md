@@ -15,7 +15,7 @@ The board is an Ethernet/Zenoh control node:
 
 The app itself (`src/`) is only the control loop plus thin handwritten eFMI
 wrappers. The fixed-wing controller equations live in
-`modelica/FixedWingOuterLoop.mo`; CMake installs the pinned Rumoca binary and
+`src/FixedWingOuterLoop.mo`; CMake installs the pinned Rumoca binary and
 generates the eFMU plus C production code under
 `${CMAKE_BINARY_DIR}/generated/rumoca`. Generated Rumoca artifacts are build
 outputs, not committed source.

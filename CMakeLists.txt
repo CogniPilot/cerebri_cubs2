@@ -62,7 +62,7 @@ set(CUBS2_EFMI_CONTROL_SOURCES)
 set(CUBS2_EFMI_CONTROL_INCLUDE_DIRS)
 
 function(cubs2_add_efmi_control_model model_name)
-  set(_model_file ${CMAKE_CURRENT_SOURCE_DIR}/modelica/${model_name}.mo)
+  set(_model_file ${CMAKE_CURRENT_SOURCE_DIR}/src/${model_name}.mo)
   set(_efmu_dir ${CUBS2_RUMOCA_GENERATED_DIR}/${model_name})
   set(_efmu_file ${CUBS2_RUMOCA_GENERATED_DIR}/${model_name}.efmu)
   set(_stamp ${CUBS2_RUMOCA_GENERATED_DIR}/${model_name}.galec-production.stamp)

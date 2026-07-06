@@ -5,7 +5,8 @@
 #include <csyn/csyn_codec.h>
 #include <csyn/csyn_zros.h>
 
-#include "cubs2_efmi_control.h"
+#include "FixedWingOuterLoop.h"
+#include "efmi_wrapper.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -19,6 +20,7 @@
 
 LOG_MODULE_REGISTER(cubs2, LOG_LEVEL_INF);
 
+#define CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS 20000000
 #define CUBS2_CONTROL_PERIOD_US (CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS / 1000U)
 
 struct control_context {
@@ -92,6 +94,7 @@ static void fixed_wing_map_input(FixedWingOuterLoopState *model,
 			.z = mocap->qz,
 		};
 
+		/* FixedWingOuterLoop consumes Euler roll/pitch/yaw in radians. */
 		csyn_euler_from_quatf(&quat, &roll, &pitch, &yaw);
 		pitch = -pitch;
 	}
@@ -243,7 +246,7 @@ int main(void)
 	int rc;
 
 	*ctx = (struct control_context){0};
-	cubs2_efmi_fixed_wing_outer_loop_init(&g_model);
+	CUBS2_EFMI_INIT(FixedWingOuterLoop, &g_model);
 
 	rc = control_pubs_init();
 	if (rc != 0) {
@@ -262,14 +265,14 @@ int main(void)
 
 		auto_mode = auto_mode_selected(ctx);
 		if (auto_mode && !ctx->previous_auto_mode) {
-			cubs2_efmi_fixed_wing_outer_loop_init(&g_model);
+			CUBS2_EFMI_INIT(FixedWingOuterLoop, &g_model);
 		}
 		ctx->previous_auto_mode = auto_mode;
 
 		if (auto_mode) {
 			if (ctx->mocap.valid) {
 				fixed_wing_map_input(&g_model, &ctx->mocap);
-				cubs2_efmi_fixed_wing_outer_loop_step(&g_model);
+				CUBS2_EFMI_STEP(FixedWingOuterLoop, &g_model);
 				fixed_wing_map_output(&g_model, &auto_rc);
 			} else {
 				idle_output(&auto_rc);
