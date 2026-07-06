@@ -224,46 +224,25 @@ model FixedWingOuterLoop
       r_est := alpha * euler_rate_new_rad_s[3] + (1.0 - alpha) * pre(r_est);
     end if;
 
-      // Select the active path segment. Dynamic array subscripts should work in
-      // Modelica, but Rumoca v0.9.11 rejects them, so selection is scalarized
-      // while the downstream geometry remains vector-shaped.
-      next_wp[1] := if current_wp == 1 then waypoints[1, 1]
-        elseif current_wp == 2 then waypoints[2, 1]
-        elseif current_wp == 3 then waypoints[3, 1]
-        elseif current_wp == 4 then waypoints[4, 1]
-        elseif current_wp == 5 then waypoints[5, 1]
-        else waypoints[6, 1];
-      next_wp[2] := if current_wp == 1 then waypoints[1, 2]
-        elseif current_wp == 2 then waypoints[2, 2]
-        elseif current_wp == 3 then waypoints[3, 2]
-        elseif current_wp == 4 then waypoints[4, 2]
-        elseif current_wp == 5 then waypoints[5, 2]
-        else waypoints[6, 2];
-      next_wp[3] := if current_wp == 1 then waypoints[1, 3]
-        elseif current_wp == 2 then waypoints[2, 3]
-        elseif current_wp == 3 then waypoints[3, 3]
-        elseif current_wp == 4 then waypoints[4, 3]
-        elseif current_wp == 5 then waypoints[5, 3]
-        else waypoints[6, 3];
-
-      prev_wp[1] := if current_wp == 1 then home[1]
-        elseif current_wp == 2 then waypoints[1, 1]
-        elseif current_wp == 3 then waypoints[2, 1]
-        elseif current_wp == 4 then waypoints[3, 1]
-        elseif current_wp == 5 then waypoints[4, 1]
-        else waypoints[5, 1];
-      prev_wp[2] := if current_wp == 1 then home[2]
-        elseif current_wp == 2 then waypoints[1, 2]
-        elseif current_wp == 3 then waypoints[2, 2]
-        elseif current_wp == 4 then waypoints[3, 2]
-        elseif current_wp == 5 then waypoints[4, 2]
-        else waypoints[5, 2];
-      prev_wp[3] := if current_wp == 1 then home[3]
-        elseif current_wp == 2 then waypoints[1, 3]
-        elseif current_wp == 3 then waypoints[2, 3]
-        elseif current_wp == 4 then waypoints[3, 3]
-        elseif current_wp == 5 then waypoints[4, 3]
-        else waypoints[5, 3];
+      // Select the active path segment. The direct form
+      // `waypoints[current_wp, :]` is the desired Modelica, but Rumoca v0.9.11
+      // only accepts array subscripts from loop iterators here.
+      next_wp := home;
+      prev_wp := home;
+      for i in 1:nWaypoints loop
+        if current_wp == i then
+          next_wp[1] := waypoints[i, 1];
+          next_wp[2] := waypoints[i, 2];
+          next_wp[3] := waypoints[i, 3];
+        end if;
+      end for;
+      for i in 1:nWaypoints - 1 loop
+        if current_wp == i + 1 then
+          prev_wp[1] := waypoints[i, 1];
+          prev_wp[2] := waypoints[i, 2];
+          prev_wp[3] := waypoints[i, 3];
+        end if;
+      end for;
 
       position_error := {next_wp[1] - x_est, next_wp[2] - y_est, next_wp[3] - z_est};
       horz_dist_err := sqrt(position_error[1] * position_error[1]
