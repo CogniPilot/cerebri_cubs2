@@ -26,38 +26,31 @@
 // held in `discrete` variables; `pre(v)` is v's value from the previous sample.
 // There are no continuous states.
 
-package CubControl
+model FixedWingOuterLoop
   constant Real pi = 3.141592653589793;
-
-  function clamp
-    input Real u;
-    input Real uMin;
-    input Real uMax;
-    output Real y;
-  algorithm
-    y := min(max(u, uMin), uMax);
-  end clamp;
-
-  function wrapPi "wrap angle to (-pi, pi]"
-    input Real angle;
-    output Real wrapped;
-  algorithm
-    wrapped := atan2(sin(angle), cos(angle));
-  end wrapPi;
-
-  model FixedWingOuterLoop
-    constant Real dt(unit = "s") = 0.02   "50 Hz outer loop (lockstep: 2 plant steps of 0.01 per packet)";
+  constant Real dt(unit = "s") = 0.02   "50 Hz outer loop (lockstep: 2 plant steps of 0.01 per packet)";
     parameter Real g = 9.81;
 
     // ── PURT circuit, constant 3 m altitude (node control_point) ────────────
     parameter Integer nWaypoints = 6;
-    parameter Real waypoints[nWaypoints, 3] = [
-      -4.0,  -5.0,  3.0;
-      -3.0,   2.0,  3.0;
-      16.20,  2.0,  3.0;
-      16.0,  -4.22, 3.0;
-      6.88,  -5.1,  3.0;
-      -4.0,  -5.0,  3.0];
+    parameter Real wp1x = -4.0;
+    parameter Real wp1y = -5.0;
+    parameter Real wp1z = 3.0;
+    parameter Real wp2x = -3.0;
+    parameter Real wp2y = 2.0;
+    parameter Real wp2z = 3.0;
+    parameter Real wp3x = 16.20;
+    parameter Real wp3y = 2.0;
+    parameter Real wp3z = 3.0;
+    parameter Real wp4x = 16.0;
+    parameter Real wp4y = -4.22;
+    parameter Real wp4z = 3.0;
+    parameter Real wp5x = 6.88;
+    parameter Real wp5y = -5.1;
+    parameter Real wp5z = 3.0;
+    parameter Real wp6x = -4.0;
+    parameter Real wp6y = -5.0;
+    parameter Real wp6z = 3.0;
 
     // ── estimator / navigation (cross_tracker_lookAhead + node overrides) ───
     parameter Real filterCutoffHz = 10.0;
@@ -173,8 +166,9 @@ package CubControl
     discrete Real p_new, q_new, r_new, gamma_new, vdot_new;
     discrete Real next_wx, next_wy, next_wz, prev_wx, prev_wy, prev_wz;
     discrete Real x_err, y_err, z_err, horz_dist_err;
-    discrete Real path_vect[3], path_len, path_angle;
-    discrete Real unit_along_path[2], unit_normal[2], pose_vect[2];
+    discrete Real path_dx, path_dy, path_dz, path_len, path_angle;
+    discrete Real unit_along_path_x, unit_along_path_y, unit_normal_x, unit_normal_y;
+    discrete Real pose_x, pose_y;
     discrete Real along_track_err_w0, along_track_err_w1, cross_track_err;
     discrete Real lookahead_nom, lookahead_eff, switch_threshold;
     discrete Real weight, drag, r_v_dot;
@@ -205,10 +199,10 @@ package CubControl
       vy_new := (y - pre(prev_y)) / dt;
       vz_new := (z - pre(prev_z)) / dt;
       speed_new := sqrt(vx_new * vx_new + vy_new * vy_new + vz_new * vz_new);
-      p_new := wrapPi(roll - pre(prev_roll)) / dt;
-      q_new := wrapPi(pitch - pre(prev_pitch)) / dt;
-      r_new := wrapPi(yaw - pre(prev_yaw)) / dt;
-      gamma_new := asin(clamp(vz_new / max(speed_new, 1e-5), -1.0, 1.0));
+      p_new := atan2(sin(roll - pre(prev_roll)), cos(roll - pre(prev_roll))) / dt;
+      q_new := atan2(sin(pitch - pre(prev_pitch)), cos(pitch - pre(prev_pitch))) / dt;
+      r_new := atan2(sin(yaw - pre(prev_yaw)), cos(yaw - pre(prev_yaw))) / dt;
+      gamma_new := asin(min(max(vz_new / max(speed_new, 1e-5), -1.0), 1.0));
       vdot_new := speed_new - pre(prev_speed);       // prev_speed := previous v_est
 
       x_est := alpha * x + (1.0 - alpha) * pre(x_est);
@@ -247,16 +241,33 @@ package CubControl
       else
         current_wp := pre(current_wp);
 
-        // next = waypoints[current_wp]; prev = waypoints[current_wp-1] (origin for wp1)
-        next_wx := waypoints[current_wp, 1];
-        next_wy := waypoints[current_wp, 2];
-        next_wz := waypoints[current_wp, 3];
+        // next = waypoint[current_wp]; prev = waypoint[current_wp-1] (origin for wp1)
+        if current_wp == 1 then
+          next_wx := wp1x; next_wy := wp1y; next_wz := wp1z;
+        elseif current_wp == 2 then
+          next_wx := wp2x; next_wy := wp2y; next_wz := wp2z;
+        elseif current_wp == 3 then
+          next_wx := wp3x; next_wy := wp3y; next_wz := wp3z;
+        elseif current_wp == 4 then
+          next_wx := wp4x; next_wy := wp4y; next_wz := wp4z;
+        elseif current_wp == 5 then
+          next_wx := wp5x; next_wy := wp5y; next_wz := wp5z;
+        else
+          next_wx := wp6x; next_wy := wp6y; next_wz := wp6z;
+        end if;
+
         if current_wp == 1 then
           prev_wx := 0.0; prev_wy := 0.0; prev_wz := 0.0;
+        elseif current_wp == 2 then
+          prev_wx := wp1x; prev_wy := wp1y; prev_wz := wp1z;
+        elseif current_wp == 3 then
+          prev_wx := wp2x; prev_wy := wp2y; prev_wz := wp2z;
+        elseif current_wp == 4 then
+          prev_wx := wp3x; prev_wy := wp3y; prev_wz := wp3z;
+        elseif current_wp == 5 then
+          prev_wx := wp4x; prev_wy := wp4y; prev_wz := wp4z;
         else
-          prev_wx := waypoints[current_wp - 1, 1];
-          prev_wy := waypoints[current_wp - 1, 2];
-          prev_wz := waypoints[current_wp - 1, 3];
+          prev_wx := wp5x; prev_wy := wp5y; prev_wz := wp5z;
         end if;
 
         // ── desired speed / flight-path / heading (get_desired_flight) ───────
@@ -268,81 +279,88 @@ package CubControl
         // Clamp the glide-slope command and floor the denominator: near a
         // waypoint horz_dist_err -> 0 made des_gamma blow up, commanding an
         // aggressive climb/dive (altitude wallow). Bound to +/-15 deg.
-        des_gamma := clamp(K_h * z_err / max(horz_dist_err, lookaheadMin), -0.12, 0.12);
+        des_gamma := min(max(K_h * z_err / max(horz_dist_err, lookaheadMin), -0.12), 0.12);
 
-        path_vect := {next_wx - prev_wx, next_wy - prev_wy, next_wz - prev_wz};
-        path_len := max(sqrt(path_vect[1]^2 + path_vect[2]^2 + path_vect[3]^2), 1e-6);
-        path_angle := atan2(path_vect[2], path_vect[1]);
-        unit_along_path := {path_vect[1] / path_len, path_vect[2] / path_len};
-        unit_normal := {-path_vect[2] / path_len, path_vect[1] / path_len};
-        pose_vect := {x_est - prev_wx, y_est - prev_wy};
-        along_track_err_w0 := pose_vect[1] * unit_along_path[1] + pose_vect[2] * unit_along_path[2];
-        along_track_err_w1 := max(0.0, path_len - clamp(along_track_err_w0, 0.0, path_len));
-        cross_track_err := pose_vect[1] * unit_normal[1] + pose_vect[2] * unit_normal[2];
-        lookahead_nom := clamp(sqrt(vx_est^2 + vy_est^2) * lookaheadTime, lookaheadMin, lookaheadMax);
+        path_dx := next_wx - prev_wx;
+        path_dy := next_wy - prev_wy;
+        path_dz := next_wz - prev_wz;
+        path_len := max(sqrt(path_dx^2 + path_dy^2 + path_dz^2), 1e-6);
+        path_angle := atan2(path_dy, path_dx);
+        unit_along_path_x := path_dx / path_len;
+        unit_along_path_y := path_dy / path_len;
+        unit_normal_x := -path_dy / path_len;
+        unit_normal_y := path_dx / path_len;
+        pose_x := x_est - prev_wx;
+        pose_y := y_est - prev_wy;
+        along_track_err_w0 := pose_x * unit_along_path_x + pose_y * unit_along_path_y;
+        along_track_err_w1 := max(0.0, path_len - min(max(along_track_err_w0, 0.0), path_len));
+        cross_track_err := pose_x * unit_normal_x + pose_y * unit_normal_y;
+        lookahead_nom := min(max(sqrt(vx_est^2 + vy_est^2) * lookaheadTime, lookaheadMin), lookaheadMax);
         lookahead_eff := max(lookaheadMin, min(lookahead_nom, along_track_err_w1));  // floor so intercept angle stays shallow near waypoints
-        des_heading := wrapPi(path_angle + atan2(-cross_track_err, max(lookahead_eff, 1e-6)));
+        des_heading := atan2(sin(path_angle + atan2(-cross_track_err, max(lookahead_eff, 1e-6))),
+                             cos(path_angle + atan2(-cross_track_err, max(lookahead_eff, 1e-6))));
         des_a := K_V * (des_v - abs(v_est));
 
         // ── TECS: desired thrust + pitch (compute_thrust_pitch) ──────────────
         // command uses the PREVIOUS integral; integral updated (anti-windup) after.
         drag := envelopeDrag;
-        r_v_dot := clamp(des_a, -drag / weight, (thrMax - drag) / weight);
+        r_v_dot := min(max(des_a, -drag / weight), (thrMax - drag) / weight);
         err_norm_es_dot := (des_gamma - gamma_est) + (r_v_dot - vdot_est) / g;
         thrust_unsat := trimThrust + weight * (K_thrustp * (gamma_est + vdot_est / g)
                         + K_thrusti * pre(err_norm_es_dot_int));
-        ref_thrust := clamp(thrust_unsat, 0.0, thrMax);
+        ref_thrust := min(max(thrust_unsat, 0.0), thrMax);
         if not ((ref_thrust >= thrMax - 1e-9 and err_norm_es_dot > 0.0)
               or (ref_thrust <= 1e-9 and err_norm_es_dot < 0.0)) then
-          err_norm_es_dot_int := clamp(pre(err_norm_es_dot_int) + err_norm_es_dot * dt,
-                                       -normEsDotIntegralMax, normEsDotIntegralMax);
+          err_norm_es_dot_int := min(max(pre(err_norm_es_dot_int) + err_norm_es_dot * dt,
+                                         -normEsDotIntegralMax), normEsDotIntegralMax);
         else
           err_norm_es_dot_int := pre(err_norm_es_dot_int);
         end if;
 
         err_dist_term := (des_gamma - gamma_est) - (r_v_dot - vdot_est) / g;
         pitch_unsat := K_pitchi * pre(err_dist_term_int) - K_pitchp * (gamma_est - vdot_est / g);
-        ref_pitch := clamp(pitch_unsat, -pitchCmdLim, pitchCmdLim);
+        ref_pitch := min(max(pitch_unsat, -pitchCmdLim), pitchCmdLim);
         if not ((ref_pitch >= pitchCmdLim - 1e-9 and err_dist_term > 0.0)
               or (ref_pitch <= -pitchCmdLim + 1e-9 and err_dist_term < 0.0)) then
-          err_dist_term_int := clamp(pre(err_dist_term_int) + err_dist_term * dt,
-                                     -distTermIntegralMax, distTermIntegralMax);
+          err_dist_term_int := min(max(pre(err_dist_term_int) + err_dist_term * dt,
+                                       -distTermIntegralMax), distTermIntegralMax);
         else
           err_dist_term_int := pre(err_dist_term_int);
         end if;
 
         // ── elevator (compute_control); pitch remapped nose-up-positive (NED) ─
         pitch_ned := -pitch_est;
-        err_pitch := wrapPi(ref_pitch - pitch_ned);
+        err_pitch := atan2(sin(ref_pitch - pitch_ned), cos(ref_pitch - pitch_ned));
         q_turn := sin(roll_est) * cos(pitch_ned) * tan(roll_est) * g / max(v_est, 1e-5);
-        err_q := wrapPi(q_turn - q_est);
+        err_q := atan2(sin(q_turn - q_est), cos(q_turn - q_est));
         nz_excess := 1.0 / max(cos(roll_est), 1e-5) - 1.0;
         ele_ff_phi := K_phi_elev * nz_excess;
-        err_pitch_int := clamp(pre(err_pitch_int) + err_pitch * dt, -pitchIntegralMax, pitchIntegralMax);
-        elevator := clamp(trimElev + K_elevp * err_pitch + K_elevi * err_pitch_int
-                          + K_q * err_q + ele_ff_phi, -1.0, 1.0);
-        throttle := clamp(ref_thrust / thrMax, 0.0, 1.0);
+        err_pitch_int := min(max(pre(err_pitch_int) + err_pitch * dt, -pitchIntegralMax),
+                             pitchIntegralMax);
+        elevator := min(max(trimElev + K_elevp * err_pitch + K_elevi * err_pitch_int
+                            + K_q * err_q + ele_ff_phi, -1.0), 1.0);
+        throttle := min(max(ref_thrust / thrMax, 0.0), 1.0);
 
         // ── heading -> bank shaping (computed every step; published) ─────────
         chi := atan2(vy_est, vx_est);
-        chi_err := -wrapPi(des_heading - chi);
+        chi_err := -atan2(sin(des_heading - chi), cos(des_heading - chi));
         if abs(chi_err) < chiDeadband then
           chi_err := 0.0;
         end if;
         chi_dot_des := kChi * chi_err;
-        phi_des := clamp(atan2(max(v_est, 0.05) * chi_dot_des, g), -phiLim, phiLim);
+        phi_des := min(max(atan2(max(v_est, 0.05) * chi_dot_des, g), -phiLim), phiLim);
         dphi_max := phiDotLim * dt;
-        phi_des := clamp(phi_des - pre(phi_cmd_state), -dphi_max, dphi_max) + pre(phi_cmd_state);
-        phi_cmd_state := clamp(phi_des, -phiLim, phiLim);
+        phi_des := min(max(phi_des - pre(phi_cmd_state), -dphi_max), dphi_max) + pre(phi_cmd_state);
+        phi_cmd_state := min(max(phi_des, -phiLim), phiLim);
         phi_cmd := phi_cmd_state;
 
         // ── lateral "direct": yaw-error PID -> aileron ───────────────────────
-        err_yaw := wrapPi(des_heading - yaw_est);  // closed-loop (FWDBG) verified: +aileron raises cerebri yaw_est, so des-yaw = neg feedback
+        err_yaw := atan2(sin(des_heading - yaw_est), cos(des_heading - yaw_est));  // closed-loop (FWDBG) verified: +aileron raises cerebri yaw_est, so des-yaw = neg feedback
         err_r_deriv := (err_yaw - pre(err_r_last)) / dt;
         err_r_last := err_yaw;
-        err_r_int := clamp(pre(err_r_int) + err_yaw * dt, -rIntegralMax, rIntegralMax);
-        aileron := clamp(trimAil + K_deltap * err_yaw + K_deltai * err_r_int
-                         + K_deltad * err_r_deriv, -1.0, 1.0);
+        err_r_int := min(max(pre(err_r_int) + err_yaw * dt, -rIntegralMax), rIntegralMax);
+        aileron := min(max(trimAil + K_deltap * err_yaw + K_deltai * err_r_int
+                           + K_deltad * err_r_deriv, -1.0), 1.0);
         rudder := 0.0;
 
         // ── waypoint advance + circuit loop (check_arrived) ──────────────────
@@ -359,5 +377,4 @@ package CubControl
       prev_roll := roll; prev_pitch := pitch; prev_yaw := yaw;
       prev_speed := v_est;
     end when;
-  end FixedWingOuterLoop;
-end CubControl;
+end FixedWingOuterLoop;

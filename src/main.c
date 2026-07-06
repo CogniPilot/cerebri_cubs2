@@ -5,7 +5,7 @@
 #include <csyn/csyn_codec.h>
 #include <csyn/csyn_zros.h>
 
-#include "generated_fixed_wing/CubControl_FixedWingOuterLoop.h"
+#include "cubs2_efmi_control.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -19,7 +19,7 @@
 
 LOG_MODULE_REGISTER(cubs2, LOG_LEVEL_INF);
 
-#define CUBS2_CONTROL_PERIOD_US (CUBCONTROL_FIXEDWINGOUTERLOOP_PERIOD_NS / 1000U)
+#define CUBS2_CONTROL_PERIOD_US (CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS / 1000U)
 
 struct control_context {
 	struct csyn_mocap_rigid_body mocap;
@@ -36,7 +36,7 @@ struct control_context {
 	bool previous_auto_mode;
 };
 
-static CubControl_FixedWingOuterLoop_t g_model;
+static FixedWingOuterLoopState g_model;
 static struct control_context g_control_ctx;
 static struct zros_node g_node;
 static struct zros_pub g_pwm_outputs_pub;
@@ -77,7 +77,7 @@ static bool read_manual_if_updated(struct control_context *ctx)
 	return true;
 }
 
-static void fixed_wing_map_input(CubControl_FixedWingOuterLoop_t *model,
+static void fixed_wing_map_input(FixedWingOuterLoopState *model,
 				 const struct csyn_mocap_rigid_body *mocap)
 {
 	float roll = 0.0f;
@@ -104,7 +104,7 @@ static void fixed_wing_map_input(CubControl_FixedWingOuterLoop_t *model,
 	model->yaw = yaw;
 }
 
-static void fixed_wing_map_output(const CubControl_FixedWingOuterLoop_t *model,
+static void fixed_wing_map_output(const FixedWingOuterLoopState *model,
 				  csyn_rc_channels16_t *rc)
 {
 	*rc = (csyn_rc_channels16_t){
@@ -243,8 +243,7 @@ int main(void)
 	int rc;
 
 	*ctx = (struct control_context){0};
-	CubControl_FixedWingOuterLoop_init(&g_model);
-	g_model.dt = (float)CUBCONTROL_FIXEDWINGOUTERLOOP_PERIOD_S;
+	cubs2_efmi_fixed_wing_outer_loop_init(&g_model);
 
 	rc = control_pubs_init();
 	if (rc != 0) {
@@ -263,15 +262,14 @@ int main(void)
 
 		auto_mode = auto_mode_selected(ctx);
 		if (auto_mode && !ctx->previous_auto_mode) {
-			CubControl_FixedWingOuterLoop_init(&g_model);
-			g_model.dt = (float)CUBCONTROL_FIXEDWINGOUTERLOOP_PERIOD_S;
+			cubs2_efmi_fixed_wing_outer_loop_init(&g_model);
 		}
 		ctx->previous_auto_mode = auto_mode;
 
 		if (auto_mode) {
 			if (ctx->mocap.valid) {
 				fixed_wing_map_input(&g_model, &ctx->mocap);
-				CubControl_FixedWingOuterLoop_step(&g_model);
+				cubs2_efmi_fixed_wing_outer_loop_step(&g_model);
 				fixed_wing_map_output(&g_model, &auto_rc);
 			} else {
 				idle_output(&auto_rc);
@@ -283,7 +281,7 @@ int main(void)
 
 		ctx->main_loop_us = k_cyc_to_us_floor32(k_cycle_get_32() - start_cycles);
 		publish_outputs(ctx, auto_mode);
-		k_sleep(K_NSEC(CUBCONTROL_FIXEDWINGOUTERLOOP_PERIOD_NS));
+		k_sleep(K_NSEC(CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS));
 	}
 
 	return 0;

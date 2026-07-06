@@ -8,13 +8,19 @@ The board is an Ethernet/Zenoh control node:
 - subscribe to `synapse/v1/topic/manual_control_command`
 - subscribe to `synapse/v1/topic/mocap_frame`
 - mirror inbound payloads from csyn into zros
-- run the generated fixed-wing controller from zros state
+- run the Rumoca-generated fixed-wing eFMI controller from zros state
 - publish `synapse/v1/topic/pwm_signal_outputs`
 - publish `vehicle_health`, `attitude_estimate`, `attitude_command`, and
   `control_loop_metrics` synapse topics for controller diagnostics
 
-The app itself (`src/`) is only the control loop plus the generated
-controller. Everything topic-related lives in the
+The app itself (`src/`) is only the control loop plus thin handwritten eFMI
+wrappers. The fixed-wing controller equations live in
+`modelica/FixedWingOuterLoop.mo`; CMake installs the pinned Rumoca binary and
+generates the eFMU plus C production code under
+`${CMAKE_BINARY_DIR}/generated/rumoca`. Generated Rumoca artifacts are build
+outputs, not committed source.
+
+Everything topic-related lives in the
 [csyn](https://github.com/CogniPilot/csyn) west module
 (`modules/lib/csyn`), which provides the topic store, the synapse_fbs
 schema pin, the zros bridge and topic definitions, the
@@ -42,7 +48,8 @@ and uses the generated C headers from that release, so the schema version is
 locked by csyn rather than per app. No local `flatc` install is required.
 Inbound `ManualControlData` is a fixed-layout struct payload, `MocapFrame`
 remains a FlatBuffer table, and all outbound topics are fixed-layout struct
-payloads.
+payloads. No local Rumoca install is required; the build downloads and verifies
+the pinned Rumoca `v0.9.11` binary before generating the controller eFMI.
 
 Use separate build directories when switching boards:
 
@@ -53,11 +60,8 @@ west build -b native_sim -d build-native_sim cerebri_cubs2
 
 ## Nix Environment
 
-Nix support is optional and lives under `nix/` so the repository root stays
-focused on the normal west application layout.
-
-Because the flake is not in the repository root, use `./nix` in Nix commands;
-bare `nix develop` will not find it.
+Nix support is optional and lives in the root `flake.nix` so it is easy to
+find from a fresh checkout.
 
 To install or configure Nix for this checkout and verify the flake:
 
@@ -68,10 +72,10 @@ To install or configure Nix for this checkout and verify the flake:
 Then use the pinned host tools from the repository root:
 
 ```sh
-nix develop ./nix
-nix run ./nix#west-update
-nix run ./nix#build
+nix develop
+nix run .#west-update
+nix run .#build
 ```
 
-Full Nix, NixOS module, and flake app details are in
-[nix/README.md](nix/README.md).
+The flake also exposes `.#build-native-sim`, `.#flash`, `.#menuconfig`, and an
+inlined `nixosModules.default` for NixOS host setup.
