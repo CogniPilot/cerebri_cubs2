@@ -246,7 +246,7 @@ int main(void)
 	int rc;
 
 	*ctx = (struct control_context){0};
-	CUBS2_EFMI_INIT(FixedWingOuterLoop, &g_model);
+	EFMI_INIT(FixedWingOuterLoop, &g_model);
 
 	rc = control_pubs_init();
 	if (rc != 0) {
@@ -265,14 +265,14 @@ int main(void)
 
 		auto_mode = auto_mode_selected(ctx);
 		if (auto_mode && !ctx->previous_auto_mode) {
-			CUBS2_EFMI_INIT(FixedWingOuterLoop, &g_model);
+			EFMI_INIT(FixedWingOuterLoop, &g_model);
 		}
 		ctx->previous_auto_mode = auto_mode;
 
 		if (auto_mode) {
 			if (ctx->mocap.valid) {
 				fixed_wing_map_input(&g_model, &ctx->mocap);
-				CUBS2_EFMI_STEP(FixedWingOuterLoop, &g_model);
+				EFMI_STEP(FixedWingOuterLoop, &g_model);
 				fixed_wing_map_output(&g_model, &auto_rc);
 			} else {
 				idle_output(&auto_rc);
