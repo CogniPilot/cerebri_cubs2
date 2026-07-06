@@ -4,12 +4,63 @@
 //
 // This fixed-period sampled model is the source for Rumoca eFMI Production Code.
 // Keep it self-contained: the GALEC backend currently accepts static vector
-// component access, but not user-defined helper functions or dynamic array
-// subscripts. Inputs and outputs stay scalar to keep the generated C API simple.
+// component access and component blocks used as state/config namespaces, but not
+// dynamic array subscripts or component blocks with their own equations/sample
+// ticks. Inputs and outputs stay scalar to keep the generated C API simple.
+
+// Rumoca v0.9.11 cannot lower component blocks that own equations or sample()
+// conditions to GALEC production code, so this block holds reusable PID tuning
+// and state while FixedWingOuterLoop performs the single sampled update.
+block DiscretePidController
+  parameter Integer nAxes = 2;
+  parameter Real trim[nAxes] = {0.0, 0.0} "trim command by PID slot";
+  parameter Real kp[nAxes] = {0.4, 1.2} "proportional gain by PID slot";
+  parameter Real ki[nAxes] = {0.4, 0.05} "integral gain by PID slot";
+  parameter Real kd[nAxes] = {0.0, 0.35} "derivative gain by PID slot";
+  parameter Real integralMax[nAxes] = {0.5, 0.4} "integral clamp by PID slot";
+  parameter Real commandMin[nAxes] = {-1.0, -1.0} "minimum stick command by PID slot";
+  parameter Real commandMax[nAxes] = {1.0, 1.0} "maximum stick command by PID slot";
+
+  discrete Real error[nAxes](each start = 0.0) "PID error by slot [rad]";
+  discrete Real derivative[nAxes](each start = 0.0) "PID derivative input by slot [rad/s]";
+  discrete Real feedforward[nAxes](each start = 0.0) "additive command by slot";
+  discrete Real integral[nAxes](each start = 0.0) "integrated error by slot [rad*s]";
+  discrete Real command[nAxes](each start = 0.0) "saturated command by slot";
+end DiscretePidController;
+
+// TECS tuning and state namespace. FixedWingOuterLoop owns the sampled TECS step
+// so the generated eFMI remains a single-rate discrete model.
+block TECSController
+  parameter Real mass(unit = "kg") = 0.063 "FixedWingPlant.vehicle_mass";
+  parameter Real thrustMax(unit = "N") = 0.30 "FixedWingPlant.thr_max";
+  parameter Real trimThrust(unit = "N") = 0.1 "cruise drag at 4.3 (L/D~9)";
+  parameter Real thrustKp = 0.01 "energy-rate damping";
+  parameter Real thrustKi = 0.25 "ramps to full thrust in ~1.5 s on a sink";
+  parameter Real energyRateIntegralMax = 3.0 "limit throttle-integral windup";
+  parameter Real pitchKp = 0.075;
+  parameter Real pitchKi = 0.216;
+  parameter Real distanceIntegralMax = 7.5;
+  parameter Real envelopeDrag(unit = "N") = 0.07 "cruise drag";
+  parameter Real pitchCommandLimit(unit = "rad") = 12.0 * 3.141592653589793 / 180.0
+    "limit climb pitch to stay below stall";
+
+  discrete Real weight(unit = "N", start = 0.0);
+  discrete Real drag(unit = "N", start = 0.0);
+  discrete Real desiredSpecificAcceleration(start = 0.0);
+  discrete Real energyRateError(start = 0.0);
+  discrete Real energyRateIntegral(start = 0.0);
+  discrete Real thrustUnsat(unit = "N", start = 0.0);
+  discrete Real thrustCommand(unit = "N", start = 0.0);
+  discrete Real distanceError(start = 0.0);
+  discrete Real distanceIntegral(start = 0.0);
+  discrete Real pitchUnsat(unit = "rad", start = 0.0);
+  discrete Real pitchCommand(unit = "rad", start = 0.0);
+end TECSController;
 
 model FixedWingOuterLoop
   constant Real pi = 3.141592653589793;
   constant Real dt(unit = "s") = 0.02   "50 Hz outer loop (lockstep: 2 plant steps of 0.01 per packet)";
+  constant Integer nStickPids = 2 "reusable stick-axis PID slots";
     parameter Real g(unit = "m/s2") = 9.81 "standard gravity";
 
     // PURT circuit, constant 3 m altitude.
@@ -33,33 +84,16 @@ model FixedWingOuterLoop
     parameter Real lookaheadMax(unit = "m") = 8.0;
     parameter Real waypointSwitchingDistance(unit = "m") = 3.0 "switch only when within 3m (< 6m legs) so it visits every wp";
 
-    // Longitudinal energy control.
-    parameter Real mass = 0.063               "FixedWingPlant.vehicle_mass [kg]";
-    parameter Real thrMax = 0.30              "FixedWingPlant.thr_max [N]";
-    parameter Real trimThrust = 0.1   "cruise drag at 4.3 (L/D~9)";
-    parameter Real K_thrustp = 0.01           "energy-rate damping (small)";
-    parameter Real K_thrusti = 0.25           "ramps to full thrust in ~1.5 s on a sink";
-    parameter Real normEsDotIntegralMax = 3.0 "limit throttle-integral windup";
-    parameter Real K_pitchp = 0.075;
-    parameter Real K_pitchi = 0.216;
-    parameter Real distTermIntegralMax = 7.5;
-    parameter Real envelopeDrag = 0.07   "cruise drag";
-    parameter Real pitchCmdLim = 12.0 * pi / 180.0 "limit climb pitch to stay below stall";
+    // Reusable discrete PID controller slots are [pitch/elevator, heading/aileron].
+    // Errors are radians; derivative inputs are rad/s; outputs are normalized
+    // stick commands [-1, 1].
+    DiscretePidController stick_pid(nAxes = nStickPids);
 
-    // Pitch stick command.
-    parameter Real trimElev = 0.0             "let the integral find pitch trim";
-    parameter Real K_elevp = 0.4              "pitch err [rad] -> stick (~1/theta_sp_max)";
-    parameter Real K_elevi = 0.4;
-    parameter Real K_q = 0.0                  "turn pitch-rate FF off (noisy; FBW handles)";
+    // Longitudinal TECS energy controller state and tuning.
+    TECSController tecs;
+
+    // Pitch stick feed-forward.
     parameter Real K_phi_elev = 1.5   "turn comp: pitch up with bank to hold a LEVEL turn (tighter radius)";
-    parameter Real pitchIntegralMax = 0.5     "allow ~full pitch trim via integral";
-
-    // Lateral heading error PID to aileron stick.
-    parameter Real trimAil = 0.0;
-    parameter Real K_deltap = 1.2;  // raised from 0.4: was using only 16 of 32 deg available bank
-    parameter Real K_deltai = 0.05;  // less windup -> faster recovery
-    parameter Real K_deltad = 0.35;  // more lead/damping: roll out before reaching target heading (anti-overshoot)
-    parameter Real rIntegralMax = 0.4;
 
     // Heading to bank shaping.
     parameter Real kChi = 1.20;
@@ -118,11 +152,6 @@ model FixedWingOuterLoop
     discrete Real prev_euler_rad[3](each start = 0.0) "previous sample [roll, pitch, yaw] [rad]";
     discrete Real prev_speed(start = 0.0);
     discrete Real time_s(start = 0.0);
-    discrete Real err_norm_es_dot_int(start = 0.0);
-    discrete Real err_dist_term_int(start = 0.0);
-    discrete Real err_pitch_int(start = 0.0);
-    discrete Real err_r_int(start = 0.0);
-    discrete Real err_r_last(start = 0.0);
     discrete Real phi_cmd_state(start = 0.0);
 
     discrete Real alpha;
@@ -140,19 +169,15 @@ model FixedWingOuterLoop
     discrete Real path_unit[2], path_normal[2], pose_from_prev[2];
     discrete Real along_track_err_w0, along_track_err_w1, cross_track_err;
     discrete Real lookahead_nom, lookahead_eff, lookahead_heading, switch_threshold;
-    discrete Real weight, drag, r_v_dot;
-    discrete Real err_norm_es_dot, thrust_unsat, ref_thrust;
-    discrete Real err_dist_term, pitch_unsat, ref_pitch;
     discrete Real pitch_ned, err_pitch, q_turn, err_q, nz_excess, ele_ff_phi;
     discrete Real chi, chi_dot_des, phi_des, dphi_max;
-    discrete Real err_yaw, err_r_deriv;
+    discrete Real err_yaw;
 
   algorithm
     when sample(0.0, dt) then
     position_m := {x, y, z};
     euler_rad := {roll, pitch, yaw};
     alpha := exp(-2.0 * pi * filterCutoffHz * dt);
-    weight := mass * g;
     current_wp := pre(current_wp);
 
     if not pre(started) then
@@ -284,45 +309,59 @@ model FixedWingOuterLoop
         des_heading := atan2(sin(lookahead_heading), cos(lookahead_heading));
         des_a := K_V * (des_v - abs(v_est));
 
-        // Desired thrust and pitch. The command uses the previous integral;
-        // the integral is updated afterward with anti-windup.
-        drag := envelopeDrag;
-        r_v_dot := min(max(des_a, -drag / weight), (thrMax - drag) / weight);
-        err_norm_es_dot := (des_gamma - gamma_est) + (r_v_dot - vdot_est) / g;
-        thrust_unsat := trimThrust + weight * (K_thrustp * (gamma_est + vdot_est / g)
-                        + K_thrusti * pre(err_norm_es_dot_int));
-        ref_thrust := min(max(thrust_unsat, 0.0), thrMax);
-        if not ((ref_thrust >= thrMax - 1e-9 and err_norm_es_dot > 0.0)
-              or (ref_thrust <= 1e-9 and err_norm_es_dot < 0.0)) then
-          err_norm_es_dot_int := min(max(pre(err_norm_es_dot_int) + err_norm_es_dot * dt,
-                                         -normEsDotIntegralMax), normEsDotIntegralMax);
+        // Longitudinal TECS: desired thrust and pitch. The command uses the
+        // previous integral; each integral is updated afterward with anti-windup.
+        tecs.weight := tecs.mass * g;
+        tecs.drag := tecs.envelopeDrag;
+        tecs.desiredSpecificAcceleration :=
+          min(max(des_a, -tecs.drag / tecs.weight),
+              (tecs.thrustMax - tecs.drag) / tecs.weight);
+        tecs.energyRateError :=
+          (des_gamma - gamma_est) + (tecs.desiredSpecificAcceleration - vdot_est) / g;
+        tecs.thrustUnsat :=
+          tecs.trimThrust
+          + tecs.weight * (tecs.thrustKp * (gamma_est + vdot_est / g)
+          + tecs.thrustKi * pre(tecs.energyRateIntegral));
+        tecs.thrustCommand := min(max(tecs.thrustUnsat, 0.0), tecs.thrustMax);
+        if not ((tecs.thrustCommand >= tecs.thrustMax - 1e-9 and tecs.energyRateError > 0.0)
+              or (tecs.thrustCommand <= 1e-9 and tecs.energyRateError < 0.0)) then
+          tecs.energyRateIntegral :=
+            min(max(pre(tecs.energyRateIntegral) + tecs.energyRateError * dt,
+                    -tecs.energyRateIntegralMax), tecs.energyRateIntegralMax);
         else
-          err_norm_es_dot_int := pre(err_norm_es_dot_int);
+          tecs.energyRateIntegral := pre(tecs.energyRateIntegral);
         end if;
 
-        err_dist_term := (des_gamma - gamma_est) - (r_v_dot - vdot_est) / g;
-        pitch_unsat := K_pitchi * pre(err_dist_term_int) - K_pitchp * (gamma_est - vdot_est / g);
-        ref_pitch := min(max(pitch_unsat, -pitchCmdLim), pitchCmdLim);
-        if not ((ref_pitch >= pitchCmdLim - 1e-9 and err_dist_term > 0.0)
-              or (ref_pitch <= -pitchCmdLim + 1e-9 and err_dist_term < 0.0)) then
-          err_dist_term_int := min(max(pre(err_dist_term_int) + err_dist_term * dt,
-                                       -distTermIntegralMax), distTermIntegralMax);
+        tecs.distanceError :=
+          (des_gamma - gamma_est) - (tecs.desiredSpecificAcceleration - vdot_est) / g;
+        tecs.pitchUnsat :=
+          tecs.pitchKi * pre(tecs.distanceIntegral)
+          - tecs.pitchKp * (gamma_est - vdot_est / g);
+        tecs.pitchCommand :=
+          min(max(tecs.pitchUnsat, -tecs.pitchCommandLimit), tecs.pitchCommandLimit);
+        if not ((tecs.pitchCommand >= tecs.pitchCommandLimit - 1e-9
+                  and tecs.distanceError > 0.0)
+              or (tecs.pitchCommand <= -tecs.pitchCommandLimit + 1e-9
+                  and tecs.distanceError < 0.0)) then
+          tecs.distanceIntegral :=
+            min(max(pre(tecs.distanceIntegral) + tecs.distanceError * dt,
+                    -tecs.distanceIntegralMax), tecs.distanceIntegralMax);
         else
-          err_dist_term_int := pre(err_dist_term_int);
+          tecs.distanceIntegral := pre(tecs.distanceIntegral);
         end if;
 
         // Pitch stick command, with pitch remapped nose-up-positive.
         pitch_ned := -pitch_est;
-        err_pitch := atan2(sin(ref_pitch - pitch_ned), cos(ref_pitch - pitch_ned));
+        err_pitch := atan2(sin(tecs.pitchCommand - pitch_ned),
+                           cos(tecs.pitchCommand - pitch_ned));
         q_turn := sin(roll_est) * cos(pitch_ned) * tan(roll_est) * g / max(v_est, 1e-5);
         err_q := atan2(sin(q_turn - q_est), cos(q_turn - q_est));
         nz_excess := 1.0 / max(cos(roll_est), 1e-5) - 1.0;
         ele_ff_phi := K_phi_elev * nz_excess;
-        err_pitch_int := min(max(pre(err_pitch_int) + err_pitch * dt, -pitchIntegralMax),
-                             pitchIntegralMax);
-        elevator := min(max(trimElev + K_elevp * err_pitch + K_elevi * err_pitch_int
-                            + K_q * err_q + ele_ff_phi, -1.0), 1.0);
-        throttle := min(max(ref_thrust / thrMax, 0.0), 1.0);
+        stick_pid.error[1] := err_pitch;       // pitch/elevator PID slot
+        stick_pid.derivative[1] := err_q;
+        stick_pid.feedforward[1] := ele_ff_phi;
+        throttle := min(max(tecs.thrustCommand / tecs.thrustMax, 0.0), 1.0);
 
         // Heading to bank shaping.
         chi := atan2(vy_est, vx_est);
@@ -339,11 +378,24 @@ model FixedWingOuterLoop
 
         // Lateral heading error PID to aileron stick.
         err_yaw := atan2(sin(des_heading - yaw_est), cos(des_heading - yaw_est));
-        err_r_deriv := (err_yaw - pre(err_r_last)) / dt;
-        err_r_last := err_yaw;
-        err_r_int := min(max(pre(err_r_int) + err_yaw * dt, -rIntegralMax), rIntegralMax);
-        aileron := min(max(trimAil + K_deltap * err_yaw + K_deltai * err_r_int
-                           + K_deltad * err_r_deriv, -1.0), 1.0);
+        stick_pid.error[2] := err_yaw;         // heading/aileron PID slot
+        stick_pid.derivative[2] := (err_yaw - pre(stick_pid.error[2])) / dt;
+        stick_pid.feedforward[2] := 0.0;
+
+        // Shared discrete PID update for stick-axis commands.
+        for i in 1:nStickPids loop
+          stick_pid.integral[i] := min(max(pre(stick_pid.integral[i])
+                                      + stick_pid.error[i] * dt,
+                                      -stick_pid.integralMax[i]), stick_pid.integralMax[i]);
+          stick_pid.command[i] := min(max(stick_pid.trim[i]
+                                      + stick_pid.kp[i] * stick_pid.error[i]
+                                      + stick_pid.ki[i] * stick_pid.integral[i]
+                                      + stick_pid.kd[i] * stick_pid.derivative[i]
+                                      + stick_pid.feedforward[i],
+                                      stick_pid.commandMin[i]), stick_pid.commandMax[i]);
+        end for;
+        elevator := stick_pid.command[1];
+        aileron := stick_pid.command[2];
         rudder := 0.0;
 
         // Waypoint advance and circuit loop.
