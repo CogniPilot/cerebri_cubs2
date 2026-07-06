@@ -209,16 +209,16 @@ model FixedWingOuterLoop
       prev_wp := home;
       for i in 1:nWaypoints loop
         if current_wp == i then
-          next_wp[1] := waypoints[i, 1];
-          next_wp[2] := waypoints[i, 2];
-          next_wp[3] := waypoints[i, 3];
+          for j in 1:3 loop
+            next_wp[j] := waypoints[i, j];
+          end for;
         end if;
       end for;
       for i in 1:nWaypoints - 1 loop
         if current_wp == i + 1 then
-          prev_wp[1] := waypoints[i, 1];
-          prev_wp[2] := waypoints[i, 2];
-          prev_wp[3] := waypoints[i, 3];
+          for j in 1:3 loop
+            prev_wp[j] := waypoints[i, j];
+          end for;
         end if;
       end for;
 
