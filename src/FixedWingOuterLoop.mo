@@ -5,8 +5,8 @@
 // This fixed-period sampled model is the source for Rumoca eFMI Production Code.
 // Keep it self-contained: the GALEC backend currently accepts static vector
 // component access and component blocks used as state/config namespaces, but not
-// dynamic array subscripts or component blocks with their own equations/sample
-// ticks. Inputs and outputs stay scalar to keep the generated C API simple.
+// dynamic array subscripts, user-defined helper functions, or component blocks
+// with their own equations/sample ticks.
 
 // Rumoca v0.9.11 cannot lower component blocks that own equations or sample()
 // conditions to GALEC production code, so this block holds reusable PID tuning
@@ -107,14 +107,10 @@ model FixedWingOuterLoop
 
     parameter Real stabilizerCmd(unit = "us") = 2000.0 "force onboard stabilizing PWM command";
 
-    // Inputs: vehicle pose. Euler angles are roll, pitch, yaw in radians after
-    // the upstream frame/sign conversion in src/main.c.
-    input Real x(unit = "m");
-    input Real y(unit = "m");
-    input Real z(unit = "m");
-    input Real roll(unit = "rad");
-    input Real pitch(unit = "rad");
-    input Real yaw(unit = "rad");
+    // Inputs: vehicle pose. Euler angles are [roll, pitch, yaw] in radians
+    // after the upstream frame/sign conversion in src/main.c.
+    input Real position_m[3](each unit = "m") "current sample [x, y, z] [m]";
+    input Real euler_rad[3](each unit = "rad") "current sample [roll, pitch, yaw] [rad]";
 
     // Outputs: AETR + stabilizer + telemetry.
     discrete output Real aileron(start = 0.0);
@@ -130,21 +126,14 @@ model FixedWingOuterLoop
     discrete output Real des_a(start = 0.0);
     discrete output Real phi_cmd(start = 0.0);
     discrete output Real chi_err(start = 0.0);
-    discrete output Real x_est(start = 0.0);
-    discrete output Real y_est(start = 0.0);
-    discrete output Real z_est(start = 0.0);
-    discrete output Real roll_est(start = 0.0);
-    discrete output Real pitch_est(start = 0.0);
-    discrete output Real yaw_est(start = 0.0);
-    discrete output Real vx_est(start = 0.0);
-    discrete output Real vy_est(start = 0.0);
-    discrete output Real vz_est(start = 0.0);
+    discrete output Real position_est_m[3](each start = 0.0) "filtered [x, y, z] [m]";
+    discrete output Real euler_est_rad[3](each start = 0.0) "filtered [roll, pitch, yaw] [rad]";
+    discrete output Real velocity_est_m_s[3](each start = 0.0) "filtered [vx, vy, vz] [m/s]";
     discrete output Real v_est(start = 0.0);
     discrete output Real gamma_est(start = 0.0);
     discrete output Real vdot_est(start = 0.0);
-    discrete output Real p_est(start = 0.0);
-    discrete output Real q_est(start = 0.0);
-    discrete output Real r_est(start = 0.0);
+    discrete output Real euler_rate_est_rad_s[3](each start = 0.0)
+      "filtered [roll, pitch, yaw] rates [rad/s]";
 
   protected
     discrete Boolean started(start = false);
@@ -155,8 +144,6 @@ model FixedWingOuterLoop
     discrete Real phi_cmd_state(start = 0.0);
 
     discrete Real alpha;
-    discrete Real position_m[3] "current sample [x, y, z] [m]";
-    discrete Real euler_rad[3] "current sample [roll, pitch, yaw] [rad]";
     discrete Real velocity_new_m_s[3] "finite-difference velocity [vx, vy, vz] [m/s]";
     discrete Real euler_rate_new_rad_s[3] "finite-difference Euler rates [roll, pitch, yaw] [rad/s]";
     discrete Real speed_new, gamma_new, vdot_new;
@@ -175,8 +162,6 @@ model FixedWingOuterLoop
 
   algorithm
     when sample(0.0, dt) then
-    position_m := {x, y, z};
-    euler_rad := {roll, pitch, yaw};
     alpha := exp(-2.0 * pi * filterCutoffHz * dt);
     current_wp := pre(current_wp);
 
@@ -185,43 +170,36 @@ model FixedWingOuterLoop
       prev_position_m := position_m;
       prev_euler_rad := euler_rad;
       prev_speed := 0.0;
-      x_est := position_m[1]; y_est := position_m[2]; z_est := position_m[3];
-      roll_est := euler_rad[1]; pitch_est := euler_rad[2]; yaw_est := euler_rad[3];
-      vx_est := 0.0; vy_est := 0.0; vz_est := 0.0; v_est := 0.0;
-      gamma_est := 0.0; vdot_est := 0.0; p_est := 0.0; q_est := 0.0; r_est := 0.0;
+      position_est_m := position_m;
+      euler_est_rad := euler_rad;
+      velocity_est_m_s := {0.0, 0.0, 0.0};
+      euler_rate_est_rad_s := {0.0, 0.0, 0.0};
+      v_est := 0.0; gamma_est := 0.0; vdot_est := 0.0;
       started := true;
     else
       // State estimation: finite difference + exponential low-pass.
-      velocity_new_m_s[1] := (position_m[1] - pre(prev_position_m[1])) / dt;
-      velocity_new_m_s[2] := (position_m[2] - pre(prev_position_m[2])) / dt;
-      velocity_new_m_s[3] := (position_m[3] - pre(prev_position_m[3])) / dt;
+      for i in 1:3 loop
+        velocity_new_m_s[i] := (position_m[i] - pre(prev_position_m[i])) / dt;
+        euler_rate_new_rad_s[i] := atan2(sin(euler_rad[i] - pre(prev_euler_rad[i])),
+                                         cos(euler_rad[i] - pre(prev_euler_rad[i]))) / dt;
+      end for;
       speed_new := sqrt(velocity_new_m_s[1] * velocity_new_m_s[1]
                         + velocity_new_m_s[2] * velocity_new_m_s[2]
                         + velocity_new_m_s[3] * velocity_new_m_s[3]);
-      euler_rate_new_rad_s[1] := atan2(sin(euler_rad[1] - pre(prev_euler_rad[1])),
-                                       cos(euler_rad[1] - pre(prev_euler_rad[1]))) / dt;
-      euler_rate_new_rad_s[2] := atan2(sin(euler_rad[2] - pre(prev_euler_rad[2])),
-                                       cos(euler_rad[2] - pre(prev_euler_rad[2]))) / dt;
-      euler_rate_new_rad_s[3] := atan2(sin(euler_rad[3] - pre(prev_euler_rad[3])),
-                                       cos(euler_rad[3] - pre(prev_euler_rad[3]))) / dt;
       gamma_new := asin(min(max(velocity_new_m_s[3] / max(speed_new, 1e-5), -1.0), 1.0));
       vdot_new := speed_new - pre(prev_speed);       // prev_speed := previous v_est
 
-      x_est := alpha * position_m[1] + (1.0 - alpha) * pre(x_est);
-      y_est := alpha * position_m[2] + (1.0 - alpha) * pre(y_est);
-      z_est := alpha * position_m[3] + (1.0 - alpha) * pre(z_est);
-      roll_est := alpha * euler_rad[1] + (1.0 - alpha) * pre(roll_est);
-      pitch_est := alpha * euler_rad[2] + (1.0 - alpha) * pre(pitch_est);
-      yaw_est := alpha * euler_rad[3] + (1.0 - alpha) * pre(yaw_est);
-      vx_est := alpha * velocity_new_m_s[1] + (1.0 - alpha) * pre(vx_est);
-      vy_est := alpha * velocity_new_m_s[2] + (1.0 - alpha) * pre(vy_est);
-      vz_est := alpha * velocity_new_m_s[3] + (1.0 - alpha) * pre(vz_est);
+      for i in 1:3 loop
+        position_est_m[i] := alpha * position_m[i] + (1.0 - alpha) * pre(position_est_m[i]);
+        euler_est_rad[i] := alpha * euler_rad[i] + (1.0 - alpha) * pre(euler_est_rad[i]);
+        velocity_est_m_s[i] :=
+          alpha * velocity_new_m_s[i] + (1.0 - alpha) * pre(velocity_est_m_s[i]);
+        euler_rate_est_rad_s[i] :=
+          alpha * euler_rate_new_rad_s[i] + (1.0 - alpha) * pre(euler_rate_est_rad_s[i]);
+      end for;
       v_est := alpha * speed_new + (1.0 - alpha) * pre(v_est);
       gamma_est := alpha * gamma_new + (1.0 - alpha) * pre(gamma_est);
       vdot_est := alpha * vdot_new + (1.0 - alpha) * pre(vdot_est);
-      p_est := alpha * euler_rate_new_rad_s[1] + (1.0 - alpha) * pre(p_est);
-      q_est := alpha * euler_rate_new_rad_s[2] + (1.0 - alpha) * pre(q_est);
-      r_est := alpha * euler_rate_new_rad_s[3] + (1.0 - alpha) * pre(r_est);
     end if;
 
       // Select the active path segment. The direct form
@@ -244,7 +222,9 @@ model FixedWingOuterLoop
         end if;
       end for;
 
-      position_error := {next_wp[1] - x_est, next_wp[2] - y_est, next_wp[3] - z_est};
+      position_error := {next_wp[1] - position_est_m[1],
+                         next_wp[2] - position_est_m[2],
+                         next_wp[3] - position_est_m[3]};
       horz_dist_err := sqrt(position_error[1] * position_error[1]
                             + position_error[2] * position_error[2]);
       path := {next_wp[1] - prev_wp[1], next_wp[2] - prev_wp[2], next_wp[3] - prev_wp[3]};
@@ -252,12 +232,13 @@ model FixedWingOuterLoop
       path_angle := atan2(path[2], path[1]);
       path_unit := {path[1] / path_len, path[2] / path_len};
       path_normal := {-path[2] / path_len, path[1] / path_len};
-      pose_from_prev := {x_est - prev_wp[1], y_est - prev_wp[2]};
+      pose_from_prev := {position_est_m[1] - prev_wp[1], position_est_m[2] - prev_wp[2]};
       along_track_err_w0 := pose_from_prev[1] * path_unit[1]
                             + pose_from_prev[2] * path_unit[2];
       along_track_err_w1 := max(0.0, path_len - min(max(along_track_err_w0, 0.0), path_len));
       cross_track_err := pose_from_prev[1] * path_normal[1] + pose_from_prev[2] * path_normal[2];
-      lookahead_nom := min(max(sqrt(vx_est^2 + vy_est^2) * lookaheadTime, lookaheadMin), lookaheadMax);
+      lookahead_nom := min(max(sqrt(velocity_est_m_s[1]^2 + velocity_est_m_s[2]^2)
+                               * lookaheadTime, lookaheadMin), lookaheadMax);
       lookahead_eff := max(lookaheadMin, min(lookahead_nom, along_track_err_w1));
       lookahead_heading := path_angle + atan2(-cross_track_err, max(lookahead_eff, 1e-6));
 
@@ -266,7 +247,7 @@ model FixedWingOuterLoop
       // 0.4 m in a turn flipped back to open-loop launch (full throttle, pitch
       // up), creating a porpoise limit cycle. Latch so transient dips stay in
       // cruise guidance.
-      airborne := pre(airborne) or (z > takeoffAltitude);
+      airborne := pre(airborne) or (position_m[3] > takeoffAltitude);
       time_s := pre(time_s) + dt;
 
       if not airborne then
@@ -330,12 +311,14 @@ model FixedWingOuterLoop
         end if;
 
         // Pitch stick command, with pitch remapped nose-up-positive.
-        pitch_ned := -pitch_est;
+        pitch_ned := -euler_est_rad[2];
         err_pitch := atan2(sin(tecs.pitchCommand - pitch_ned),
                            cos(tecs.pitchCommand - pitch_ned));
-        q_turn := sin(roll_est) * cos(pitch_ned) * tan(roll_est) * g / max(v_est, 1e-5);
-        err_q := atan2(sin(q_turn - q_est), cos(q_turn - q_est));
-        nz_excess := 1.0 / max(cos(roll_est), 1e-5) - 1.0;
+        q_turn := sin(euler_est_rad[1]) * cos(pitch_ned)
+                  * tan(euler_est_rad[1]) * g / max(v_est, 1e-5);
+        err_q := atan2(sin(q_turn - euler_rate_est_rad_s[2]),
+                       cos(q_turn - euler_rate_est_rad_s[2]));
+        nz_excess := 1.0 / max(cos(euler_est_rad[1]), 1e-5) - 1.0;
         ele_ff_phi := K_phi_elev * nz_excess;
         stick_pid.error[1] := err_pitch;       // pitch/elevator PID slot
         stick_pid.derivative[1] := err_q;
@@ -343,7 +326,7 @@ model FixedWingOuterLoop
         throttle := min(max(tecs.thrustCommand / tecs.thrustMax, 0.0), 1.0);
 
         // Heading to bank shaping.
-        chi := atan2(vy_est, vx_est);
+        chi := atan2(velocity_est_m_s[2], velocity_est_m_s[1]);
         chi_err := -atan2(sin(des_heading - chi), cos(des_heading - chi));
         if abs(chi_err) < chiDeadband then
           chi_err := 0.0;
@@ -356,7 +339,8 @@ model FixedWingOuterLoop
         phi_cmd := phi_cmd_state;
 
         // Lateral heading error PID to aileron stick.
-        err_yaw := atan2(sin(des_heading - yaw_est), cos(des_heading - yaw_est));
+        err_yaw := atan2(sin(des_heading - euler_est_rad[3]),
+                         cos(des_heading - euler_est_rad[3]));
         stick_pid.error[2] := err_yaw;         // heading/aileron PID slot
         stick_pid.derivative[2] := (err_yaw - pre(stick_pid.error[2])) / dt;
         stick_pid.feedforward[2] := 0.0;

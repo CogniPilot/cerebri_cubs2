@@ -94,17 +94,17 @@ static void fixed_wing_map_input(FixedWingOuterLoopState *model,
 			.z = mocap->qz,
 		};
 
-		/* FixedWingOuterLoop consumes Euler roll/pitch/yaw in radians. */
+		/* FixedWingOuterLoop consumes Euler [roll, pitch, yaw] in radians. */
 		csyn_euler_from_quatf(&quat, &roll, &pitch, &yaw);
 		pitch = -pitch;
 	}
 
-	model->x = mocap->x;
-	model->y = mocap->y;
-	model->z = mocap->z;
-	model->roll = roll;
-	model->pitch = pitch;
-	model->yaw = yaw;
+	model->position_m[0] = mocap->x;
+	model->position_m[1] = mocap->y;
+	model->position_m[2] = mocap->z;
+	model->euler_rad[0] = roll;
+	model->euler_rad[1] = pitch;
+	model->euler_rad[2] = yaw;
 }
 
 static void fixed_wing_map_output(const FixedWingOuterLoopState *model,
@@ -206,13 +206,13 @@ static void update_telemetry(struct control_context *ctx, bool auto_mode)
 	ctx->attitude_estimate = (synapse_topic_AttitudeEstimateData_t){
 		.timestamp_us = now_us,
 		.angular_velocity_flu_rad_s = {
-			.roll = (float)g_model.p_est,
-			.pitch = (float)g_model.q_est,
-			.yaw = (float)g_model.r_est,
+			.roll = (float)g_model.euler_rate_est_rad_s[0],
+			.pitch = (float)g_model.euler_rate_est_rad_s[1],
+			.yaw = (float)g_model.euler_rate_est_rad_s[2],
 		},
 	};
-	csyn_quatf_from_euler((float)g_model.roll, (float)g_model.pitch, (float)g_model.yaw,
-			      &ctx->attitude_estimate.attitude);
+	csyn_quatf_from_euler((float)g_model.euler_rad[0], (float)g_model.euler_rad[1],
+			      (float)g_model.euler_rad[2], &ctx->attitude_estimate.attitude);
 
 	ctx->attitude_command = (synapse_topic_AttitudeCommandData_t){
 		.timestamp_us = now_us,
