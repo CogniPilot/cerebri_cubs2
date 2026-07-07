@@ -3,12 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    rumoca.url = "github:CogniPilot/rumoca?rev=3ba21755bf02e97f8db0690099a5db7ba621b1db";
-    rumoca.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
-    { self, nixpkgs, rumoca }:
+    { self, nixpkgs }:
     let
       lib = nixpkgs.lib;
       supportedSystems = [
@@ -22,6 +20,48 @@
       appCacheName = "cerebri-cubs2";
       defaultBoard = "mr_vmu_tropic";
       defaultNativeSimBoard = "native_sim";
+      rumocaVersion = "0.9.13";
+      mkRumocaBinaryPackage =
+        pkgs:
+        let
+          assets = {
+            x86_64-linux = {
+              name = "rumoca-linux-x86_64";
+              hash = "sha256-PLU18XMV0JWo1GKRmC9M37H6D2N4Ef8kPLhADwGrMlQ=";
+            };
+            aarch64-linux = {
+              name = "rumoca-linux-aarch64";
+              hash = "sha256-+DCPa3cAa8/4Lyn3NoGItm/8XiKpxRb+3JvaAll21Ng=";
+            };
+          };
+          asset =
+            assets.${pkgs.stdenv.hostPlatform.system}
+              or (throw "unsupported Rumoca binary platform: ${pkgs.stdenv.hostPlatform.system}");
+        in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "rumoca";
+          version = rumocaVersion;
+
+          src = pkgs.fetchurl {
+            url = "https://github.com/CogniPilot/rumoca/releases/download/v${rumocaVersion}/${asset.name}";
+            inherit (asset) hash;
+          };
+
+          dontUnpack = true;
+
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 "$src" "$out/bin/rumoca"
+            runHook postInstall
+          '';
+
+          meta = {
+            description = "Rumoca Modelica compiler release binary";
+            homepage = "https://github.com/CogniPilot/rumoca";
+            license = lib.licenses.asl20;
+            platforms = builtins.attrNames assets;
+          };
+        };
       mkPythonEnv =
         pkgs:
         pkgs.python3.withPackages (
@@ -62,7 +102,7 @@
         system:
         let
           pkgs = pkgsFor system;
-          rumocaPackage = rumoca.packages.${system}.rumoca;
+          rumocaPackage = mkRumocaBinaryPackage pkgs;
           pythonEnv = mkPythonEnv pkgs;
           flightPythonEnv = mkFlightPythonEnv pkgs;
           nativeSimSilPythonEnv = mkNativeSimSilPythonEnv pkgs;
