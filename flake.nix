@@ -3,7 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    rumoca.url = "github:CogniPilot/rumoca/36503311c7622b65fdf94971e7547341b7f00b2e";
+    rumoca.url = "github:CogniPilot/rumoca/1ca331675573f8a6d5471f9bc2f873f7d6d0e5f8";
   };
 
   outputs =
