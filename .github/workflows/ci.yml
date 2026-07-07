@@ -12,7 +12,7 @@ on:
       - published
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ci-v2-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'release' && !startsWith(github.ref, 'refs/tags/') }}
 
 permissions:
@@ -63,7 +63,7 @@ jobs:
     name: Nix Setup + Rumoca fmt/lint
     runs-on: ubuntu-latest
     concurrency:
-      group: nix-cache-${{ github.workflow }}-${{ github.ref }}
+      group: nix-cache-v2-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: false
 
     steps:
@@ -90,7 +90,7 @@ jobs:
       - release_tag
     runs-on: ubuntu-latest
     concurrency:
-      group: nix-cache-${{ github.workflow }}-${{ github.ref }}
+      group: nix-cache-v2-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: false
     strategy:
       fail-fast: false
@@ -162,7 +162,7 @@ jobs:
       - build
     runs-on: ubuntu-latest
     concurrency:
-      group: nix-cache-${{ github.workflow }}-${{ github.ref }}
+      group: nix-cache-v2-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: false
 
     steps:
@@ -218,7 +218,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
-      group: nix-cache-${{ github.workflow }}-${{ github.ref }}
+      group: nix-cache-v2-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: false
 
     steps:
