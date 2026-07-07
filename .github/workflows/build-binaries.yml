@@ -38,7 +38,8 @@ jobs:
 
   build:
     name: Build ${{ matrix.target.name }}
-    needs: modelica
+    needs:
+      - modelica
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -97,6 +98,55 @@ jobs:
           name: cerebri-cubs2-${{ matrix.target.name }}
           path: cerebri_cubs2/dist/${{ matrix.target.name }}/*
           if-no-files-found: error
+
+  flight-sil:
+    name: Flight SIL
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: cerebri_cubs2
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+
+      - name: Run staged flight SIL
+        working-directory: cerebri_cubs2
+        run: nix run .#flight-sil-test
+
+      - name: Upload flight artifacts
+        id: upload-flight-artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cerebri-cubs2-flight-sil
+          path: |
+            cerebri_cubs2/artifacts/flight/*.csv
+            cerebri_cubs2/artifacts/flight/*.png
+            cerebri_cubs2/artifacts/flight/*.html
+            cerebri_cubs2/artifacts/flight/*.md
+          if-no-files-found: error
+
+      - name: Publish flight summary
+        if: always()
+        working-directory: cerebri_cubs2
+        env:
+          FLIGHT_ARTIFACT_URL: ${{ steps.upload-flight-artifacts.outputs.artifact-url }}
+        run: |
+          if [ -f artifacts/flight/flight-summary.md ]; then
+            cat artifacts/flight/flight-summary.md >> "$GITHUB_STEP_SUMMARY"
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ -n "$FLIGHT_ARTIFACT_URL" ]; then
+            printf '[Download flight artifacts](%s)\n' "$FLIGHT_ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   release:
     name: Publish release binaries

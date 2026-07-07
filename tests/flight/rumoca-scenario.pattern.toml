@@ -1,0 +1,20 @@
+source_roots = [
+  "../../models/vendor/CMM-v0.0.2",
+  "../../models/plant/SportCubSIL.mo",
+  "../../models/plant/FixedWingSIL.mo",
+  "../../src/FixedWingOuterLoop.mo",
+]
+
+[model]
+file = "Cubs2FlightScenarios.mo"
+name = "Cubs2PatternMission"
+
+[rumoca]
+task = "simulate"
+version = "1"
+
+[sim]
+dt = 0.02
+t_end = 150.0
+solver = "rk-like"
+output = "artifacts/flight/pattern.csv"

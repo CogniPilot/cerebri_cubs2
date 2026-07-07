@@ -38,59 +38,16 @@ if(TARGET native_simulator AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
   target_link_options(native_simulator INTERFACE -Wl,--no-warn-search-mismatch)
 endif()
 
-set(CUBS2_RUMOCA_VERSION "v0.9.11"
-  CACHE STRING "Pinned Rumoca version used when CUBS2_RUMOCA_EXECUTABLE is not set"
-)
-set(CUBS2_RUMOCA_INSTALL_SCRIPT_SHA256
-  "ac15aa5ec90cb974387610fae7594d2704f2a3bd2e080cfe2517e896d30eb161"
-  CACHE STRING "SHA256 of the pinned Rumoca binary install script"
-)
-set(CUBS2_RUMOCA_INSTALL_SCRIPT_URL
-  "https://raw.githubusercontent.com/CogniPilot/rumoca/${CUBS2_RUMOCA_VERSION}/infra/install/install.sh"
-  CACHE STRING "Pinned Rumoca binary install script URL"
-)
 set(CUBS2_RUMOCA_EXECUTABLE "" CACHE FILEPATH
-  "Optional path to a Rumoca executable; empty installs the pinned release"
+  "Rumoca CLI executable used for Modelica code generation"
 )
 
 if(NOT CUBS2_RUMOCA_EXECUTABLE AND DEFINED ENV{CUBS2_RUMOCA_EXECUTABLE})
   set(CUBS2_RUMOCA_EXECUTABLE "$ENV{CUBS2_RUMOCA_EXECUTABLE}")
 endif()
 
-if(CUBS2_RUMOCA_EXECUTABLE)
-  set(CUBS2_RUMOCA_DESCRIPTION "${CUBS2_RUMOCA_EXECUTABLE}")
-  add_custom_target(cubs2_rumoca_tool
-    DEPENDS ${CUBS2_RUMOCA_EXECUTABLE}
-  )
-else()
-  if(CUBS2_RUMOCA_VERSION STREQUAL "v0.9.11")
-    message(WARNING
-      "FixedWingOuterLoop currently requires Rumoca GALEC fixes after v0.9.11; "
-      "set CUBS2_RUMOCA_EXECUTABLE until CUBS2_RUMOCA_VERSION is updated."
-    )
-  endif()
-
-  set(CUBS2_RUMOCA_DESCRIPTION "Rumoca ${CUBS2_RUMOCA_VERSION}")
-  set(CUBS2_RUMOCA_BIN_DIR
-    ${CMAKE_CURRENT_BINARY_DIR}/tools/rumoca/${CUBS2_RUMOCA_VERSION}
-  )
-  set(CUBS2_RUMOCA_EXECUTABLE ${CUBS2_RUMOCA_BIN_DIR}/rumoca)
-
-  add_custom_command(
-    OUTPUT ${CUBS2_RUMOCA_EXECUTABLE}
-    COMMAND ${CMAKE_COMMAND}
-            -DCUBS2_RUMOCA_VERSION=${CUBS2_RUMOCA_VERSION}
-            -DCUBS2_RUMOCA_BIN_DIR=${CUBS2_RUMOCA_BIN_DIR}
-            -DCUBS2_RUMOCA_INSTALL_SCRIPT_URL=${CUBS2_RUMOCA_INSTALL_SCRIPT_URL}
-            -DCUBS2_RUMOCA_INSTALL_SCRIPT_SHA256=${CUBS2_RUMOCA_INSTALL_SCRIPT_SHA256}
-            -P ${CMAKE_CURRENT_LIST_DIR}/cmake/InstallRumoca.cmake
-    COMMENT "Installing pinned Rumoca ${CUBS2_RUMOCA_VERSION}"
-    VERBATIM
-  )
-
-  add_custom_target(cubs2_rumoca_tool
-    DEPENDS ${CUBS2_RUMOCA_EXECUTABLE}
-  )
+if(NOT CUBS2_RUMOCA_EXECUTABLE)
+  find_program(CUBS2_RUMOCA_EXECUTABLE rumoca REQUIRED)
 endif()
 
 set(CUBS2_RUMOCA_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/rumoca)
@@ -116,21 +73,16 @@ function(cubs2_add_efmi_control_model model_name)
       ${_header}
       ${_efmu_dir}/ProductionCode/manifest.xml
       ${_efmu_dir}/__content.xml
-    COMMAND ${CMAKE_COMMAND}
-            "-DCUBS2_RUMOCA_EXECUTABLE=${CUBS2_RUMOCA_EXECUTABLE}"
-            "-DCUBS2_RUMOCA_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/.rumoca-cache"
-            "-DCUBS2_RUMOCA_MODEL_FILE=${_model_file}"
-            "-DCUBS2_RUMOCA_MODEL_NAME=${model_name}"
-            "-DCUBS2_RUMOCA_TARGET=galec-production"
-            "-DCUBS2_RUMOCA_OUTPUT_DIR=${CUBS2_RUMOCA_GENERATED_DIR}"
-            "-DCUBS2_RUMOCA_EFMU_DIR=${_efmu_dir}"
-            "-DCUBS2_RUMOCA_EFMU_FILE=${_efmu_file}"
-            "-DCUBS2_RUMOCA_STAMP=${_stamp}"
-            -P ${CMAKE_CURRENT_LIST_DIR}/cmake/RunRumocaCompile.cmake
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${_efmu_dir}" "${_efmu_file}"
+    COMMAND "${CUBS2_RUMOCA_EXECUTABLE}"
+            compile "${_model_file}"
+            --model "${model_name}"
+            --target galec-production
+            --output "${CUBS2_RUMOCA_GENERATED_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E touch "${_stamp}"
     DEPENDS
       ${_model_file}
-      ${CUBS2_RUMOCA_EXECUTABLE}
-    COMMENT "Generating ${model_name} eFMI Production Code with ${CUBS2_RUMOCA_DESCRIPTION}"
+    COMMENT "Generating ${model_name} eFMI Production Code with Rumoca CLI"
     VERBATIM
   )
 

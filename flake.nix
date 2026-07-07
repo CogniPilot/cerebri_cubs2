@@ -3,7 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    rumoca.url = "github:CogniPilot/rumoca/1ca331675573f8a6d5471f9bc2f873f7d6d0e5f8";
+    rumoca.url = "github:CogniPilot/rumoca?rev=1ca331675573f8a6d5471f9bc2f873f7d6d0e5f8";
   };
 
   outputs =
@@ -40,16 +40,24 @@
             west
           ]
         );
+      mkFlightPythonEnv =
+        pkgs:
+        pkgs.python3.withPackages (
+          ps: with ps; [
+            matplotlib
+            numpy
+          ]
+        );
     in
     {
       packages = forAllSystems (
         system:
         let
           pkgs = pkgsFor system;
-          pythonEnv = mkPythonEnv pkgs;
-          hostCc = if system == "x86_64-linux" then pkgs.gcc_multi else pkgs.stdenv.cc;
           rumocaPackage = rumoca.packages.${system}.rumoca;
-          rumocaExecutable = "${rumocaPackage}/bin/rumoca";
+          pythonEnv = mkPythonEnv pkgs;
+          flightPythonEnv = mkFlightPythonEnv pkgs;
+          hostCc = if system == "x86_64-linux" then pkgs.gcc_multi else pkgs.stdenv.cc;
           hostMultilibTools = lib.optionals (system == "x86_64-linux") [
             pkgs.glibc_multi.dev
           ];
@@ -236,6 +244,7 @@
 
               export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
               export GNUARMEMB_TOOLCHAIN_PATH="''${GNUARMEMB_TOOLCHAIN_PATH:-${pkgs.gcc-arm-embedded}}"
+              export CUBS2_RUMOCA_EXECUTABLE="''${CUBS2_RUMOCA_EXECUTABLE:-${rumocaPackage}/bin/rumoca}"
               export CUBS2_WORKSPACE_ROOT="$workspace"
 
               if [ -d "$workspace/zephyr" ]; then
@@ -285,10 +294,6 @@
             }
           '';
 
-          rumocaScript = ''
-            export CUBS2_RUMOCA_EXECUTABLE="''${CUBS2_RUMOCA_EXECUTABLE:-${rumocaExecutable}}"
-          '';
-
           mkWestApp =
             name: text:
             pkgs.writeShellApplication {
@@ -305,7 +310,6 @@
             zephyr_app_require_workspace "$app"
             workspace="$CUBS2_WORKSPACE_ROOT"
 
-            ${rumocaScript}
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
 
             board="''${CUBS2_BOARD:-${defaultBoard}}"
@@ -324,7 +328,6 @@
             zephyr_app_require_workspace "$app"
             workspace="$CUBS2_WORKSPACE_ROOT"
 
-            ${rumocaScript}
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-host}"
 
             board="''${CUBS2_NATIVE_SIM_BOARD:-${defaultNativeSimBoard}}"
@@ -366,7 +369,6 @@
             zephyr_app_require_workspace "$app"
             workspace="$CUBS2_WORKSPACE_ROOT"
 
-            ${rumocaScript}
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
 
             board="''${CUBS2_BOARD:-${defaultBoard}}"
@@ -418,6 +420,7 @@
             name = "rumoca-check";
             runtimeInputs = [
               pkgs.coreutils
+              rumocaPackage
             ];
             text = ''
               model="''${1:-src/FixedWingOuterLoop.mo}"
@@ -427,8 +430,26 @@
                 exit 1
               fi
 
-              "${rumocaExecutable}" fmt --check "$model"
-              "${rumocaExecutable}" lint "$model"
+              rumoca fmt --check "$model"
+              rumoca lint --min-level warning --warnings-as-errors "$model"
+            '';
+          };
+
+          cubs2-flight-sil-test = pkgs.writeShellApplication {
+            name = "cubs2-flight-sil-test";
+            runtimeInputs = [
+              pkgs.coreutils
+              hostCc
+              rumocaPackage
+              flightPythonEnv
+            ];
+            text = ''
+              ${commonScript}
+
+              app="$(zephyr_app_find_app)"
+              export CUBS2_RUMOCA_EXECUTABLE="''${CUBS2_RUMOCA_EXECUTABLE:-${rumocaPackage}/bin/rumoca}"
+              cd "$app"
+              exec "${flightPythonEnv}/bin/python" tests/flight/run_cubs2_flight_sil.py "$@"
             '';
           };
 
@@ -440,6 +461,7 @@
               cubs2-flash
               cubs2-menuconfig
               cubs2-west-update
+              cubs2-flight-sil-test
               rumoca-check
             ];
           };
@@ -447,14 +469,17 @@
         {
           inherit
             host-tools
+            rumocaPackage
             cubs2-build
             cubs2-build-native-sim
             cubs2-flash
             cubs2-menuconfig
             cubs2-west-update
+            cubs2-flight-sil-test
             rumoca-check
             ;
 
+          rumoca = rumocaPackage;
           default = host-tools;
         }
       );
@@ -500,6 +525,12 @@
             program = "${packages.rumoca-check}/bin/rumoca-check";
             meta.description = "Run Rumoca formatting and lint checks";
           };
+
+          flight-sil-test = {
+            type = "app";
+            program = "${packages.cubs2-flight-sil-test}/bin/cubs2-flight-sil-test";
+            meta.description = "Run staged CUBS2 flight SIL checks and generate a track plot";
+          };
         }
       );
 
@@ -508,8 +539,8 @@
         let
           pkgs = pkgsFor system;
           pythonEnv = mkPythonEnv pkgs;
+          rumocaPackage = self.packages.${system}.rumocaPackage;
           packages = self.packages.${system};
-          rumocaExecutable = "${rumoca.packages.${system}.rumoca}/bin/rumoca";
         in
         {
           default = pkgs.mkShell {
@@ -523,8 +554,8 @@
             shellHook = ''
               export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
               export GNUARMEMB_TOOLCHAIN_PATH="''${GNUARMEMB_TOOLCHAIN_PATH:-${pkgs.gcc-arm-embedded}}"
-              export CUBS2_RUMOCA_EXECUTABLE="''${CUBS2_RUMOCA_EXECUTABLE:-${rumocaExecutable}}"
               export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
+              export CUBS2_RUMOCA_EXECUTABLE="''${CUBS2_RUMOCA_EXECUTABLE:-${rumocaPackage}/bin/rumoca}"
 
               zephyr_app_shell_find_app() {
                 local dir
@@ -579,7 +610,7 @@
                 export ZEPHYR_BASE="$PWD/zephyr"
               fi
 
-              echo "${appDisplayName} Nix shell: cubs2-west-update, cubs2-build, cubs2-build-native-sim, cubs2-flash"
+              echo "${appDisplayName} Nix shell: cubs2-west-update, cubs2-build, cubs2-build-native-sim, cubs2-flight-sil-test, cubs2-flash"
             '';
           };
         }

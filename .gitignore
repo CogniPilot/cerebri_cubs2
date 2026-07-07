@@ -10,3 +10,4 @@ twister-out/
 __pycache__
 result
 result-*
+artifacts/
