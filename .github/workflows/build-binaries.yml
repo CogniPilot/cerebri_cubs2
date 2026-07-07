@@ -16,6 +16,7 @@ permissions:
 
 env:
   NIX_FLAGS: --quiet --option warn-dirty false
+  CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
   CUBS2_QUIET_LOGS: "1"
   CUBS2_LOG_TAIL_LINES: "200"
 
@@ -41,6 +42,13 @@ jobs:
         uses: cachix/cachix-action@v17
         with:
           name: rumoca
+
+      - name: Use CUBS2 binary cache
+        if: env.CACHIX_AUTH_TOKEN != ''
+        uses: cachix/cachix-action@v17
+        with:
+          name: cerebri-cubs2
+          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
 
       - name: Check Modelica
         working-directory: cerebri_cubs2
@@ -87,6 +95,13 @@ jobs:
         uses: cachix/cachix-action@v17
         with:
           name: rumoca
+
+      - name: Use CUBS2 binary cache
+        if: env.CACHIX_AUTH_TOKEN != ''
+        uses: cachix/cachix-action@v17
+        with:
+          name: cerebri-cubs2
+          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
@@ -146,6 +161,13 @@ jobs:
         with:
           name: rumoca
 
+      - name: Use CUBS2 binary cache
+        if: env.CACHIX_AUTH_TOKEN != ''
+        uses: cachix/cachix-action@v17
+        with:
+          name: cerebri-cubs2
+          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+
       - name: Run staged flight SIL
         working-directory: cerebri_cubs2
         run: nix $NIX_FLAGS run .#flight-sil-test
@@ -202,6 +224,13 @@ jobs:
         uses: cachix/cachix-action@v17
         with:
           name: rumoca
+
+      - name: Use CUBS2 binary cache
+        if: env.CACHIX_AUTH_TOKEN != ''
+        uses: cachix/cachix-action@v17
+        with:
+          name: cerebri-cubs2
+          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
 
       - name: Download native_sim executable
         uses: actions/download-artifact@v4
