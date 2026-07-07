@@ -27,9 +27,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v31
+        uses: DeterminateSystems/nix-installer-action@v22
         with:
-          extra_nix_config: |
+          extra-conf: |
             experimental-features = nix-command flakes
 
       - name: Check Modelica
@@ -65,9 +65,9 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: cachix/install-nix-action@v31
+        uses: DeterminateSystems/nix-installer-action@v22
         with:
-          extra_nix_config: |
+          extra-conf: |
             experimental-features = nix-command flakes
 
       - name: Update west workspace
