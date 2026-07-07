@@ -14,6 +14,11 @@ on:
 permissions:
   contents: read
 
+env:
+  NIX_FLAGS: --quiet --option warn-dirty false
+  CUBS2_QUIET_LOGS: "1"
+  CUBS2_LOG_TAIL_LINES: "200"
+
 jobs:
   modelica:
     name: Rumoca fmt/lint
@@ -34,7 +39,7 @@ jobs:
 
       - name: Check Modelica
         working-directory: cerebri_cubs2
-        run: nix run .#rumoca-check
+        run: nix $NIX_FLAGS run .#rumoca-check
 
   build:
     name: Build ${{ matrix.target.name }}
@@ -46,13 +51,15 @@ jobs:
       matrix:
         target:
           - name: mr_vmu_tropic
-            command: nix run .#build
+            command: nix $NIX_FLAGS run .#build
+            log: build-mr_vmu_tropic/west-build.log
             files: |
               build-mr_vmu_tropic/zephyr/zephyr.elf
               build-mr_vmu_tropic/zephyr/zephyr.bin
               build-mr_vmu_tropic/zephyr/zephyr.map
           - name: native_sim
-            command: nix run .#build-native-sim
+            command: nix $NIX_FLAGS run .#build-native-sim
+            log: build-native_sim/west-build.log
             files: |
               build-native_sim/zephyr/zephyr.exe
               build-native_sim/zephyr/zephyr.elf
@@ -73,7 +80,7 @@ jobs:
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
-        run: nix run .#west-update
+        run: nix $NIX_FLAGS run .#west-update
 
       - name: Build
         working-directory: cerebri_cubs2
@@ -99,6 +106,14 @@ jobs:
           path: cerebri_cubs2/dist/${{ matrix.target.name }}/*
           if-no-files-found: error
 
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cerebri-cubs2-${{ matrix.target.name }}-build-log
+          path: cerebri_cubs2/${{ matrix.target.log }}
+          if-no-files-found: warn
+
   flight-sil:
     name: Flight SIL
     runs-on: ubuntu-latest
@@ -118,7 +133,7 @@ jobs:
 
       - name: Run staged flight SIL
         working-directory: cerebri_cubs2
-        run: nix run .#flight-sil-test
+        run: nix $NIX_FLAGS run .#flight-sil-test
 
       - name: Upload flight artifacts
         id: upload-flight-artifacts
@@ -146,6 +161,61 @@ jobs:
 
           if [ -n "$FLIGHT_ARTIFACT_URL" ]; then
             printf '[Download flight artifacts](%s)\n' "$FLIGHT_ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  native-sim-sil:
+    name: Zephyr native_sim Zenoh SIL
+    needs:
+      - modelica
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: cerebri_cubs2
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+
+      - name: Update west workspace
+        working-directory: cerebri_cubs2
+        run: nix $NIX_FLAGS run .#west-update
+
+      - name: Run native_sim Zenoh SIL
+        working-directory: cerebri_cubs2
+        run: nix $NIX_FLAGS run .#native-sim-sil-test
+
+      - name: Upload native_sim SIL artifacts
+        id: upload-native-sim-artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cerebri-cubs2-native-sim-zenoh-sil
+          path: |
+            cerebri_cubs2/build-native_sim/west-build.log
+            cerebri_cubs2/artifacts/native-sim-sil/*.csv
+            cerebri_cubs2/artifacts/native-sim-sil/*.log
+            cerebri_cubs2/artifacts/native-sim-sil/*.md
+          if-no-files-found: warn
+
+      - name: Publish native_sim SIL summary
+        if: always()
+        working-directory: cerebri_cubs2
+        env:
+          NATIVE_SIM_ARTIFACT_URL: ${{ steps.upload-native-sim-artifacts.outputs.artifact-url }}
+        run: |
+          if [ -f artifacts/native-sim-sil/native-sim-summary.md ]; then
+            cat artifacts/native-sim-sil/native-sim-summary.md >> "$GITHUB_STEP_SUMMARY"
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ -n "$NATIVE_SIM_ARTIFACT_URL" ]; then
+            printf '[Download native_sim SIL artifacts](%s)\n' "$NATIVE_SIM_ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
           fi
 
   release:

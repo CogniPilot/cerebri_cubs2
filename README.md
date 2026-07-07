@@ -23,8 +23,8 @@ Everything topic-related lives in the
 [csyn](https://github.com/CogniPilot/csyn) west module
 (`modules/lib/csyn`), which provides the topic store, the synapse_fbs
 schema pin, the zros bridge and topic definitions, the
-`csyn topic list/info/echo/hz/watch` shell diagnostics, and the zenoh and
-native_sim UDP transports.
+`csyn topic list/info/echo/hz/watch` shell diagnostics, and the Zenoh
+transport used by both hardware and `native_sim`.
 
 There are no local RC, sensor, actuator, storage, driver, schema, or include
 directories in this app.
@@ -90,3 +90,16 @@ nix run .#build
 
 The flake also exposes `.#build-native-sim`, `.#flash`, `.#menuconfig`, and an
 inlined `nixosModules.default` for NixOS host setup.
+
+To run the Zephyr `native_sim` app through Zenoh, use:
+
+```sh
+nix run .#west-update
+nix run .#native-sim-sil-test
+```
+
+The native-sim SIL runner starts `zenohd` on `udp/127.0.0.1:7447`, launches
+`build-native_sim/zephyr/zephyr.exe`, publishes manual-control and mocap inputs,
+and verifies PWM outputs on `synapse/v1/topic/pwm_signal_outputs`. A Zenoh
+ground station can connect to the same router while the native_sim executable
+is running.

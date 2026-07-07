@@ -48,6 +48,13 @@
             numpy
           ]
         );
+      mkNativeSimSilPythonEnv =
+        pkgs:
+        pkgs.python3.withPackages (
+          ps: with ps; [
+            zenoh
+          ]
+        );
     in
     {
       packages = forAllSystems (
@@ -57,6 +64,7 @@
           rumocaPackage = rumoca.packages.${system}.rumoca;
           pythonEnv = mkPythonEnv pkgs;
           flightPythonEnv = mkFlightPythonEnv pkgs;
+          nativeSimSilPythonEnv = mkNativeSimSilPythonEnv pkgs;
           hostCc = if system == "x86_64-linux" then pkgs.gcc_multi else pkgs.stdenv.cc;
           hostMultilibTools = lib.optionals (system == "x86_64-linux") [
             pkgs.glibc_multi.dev
@@ -84,7 +92,7 @@
             pkgs.picocom
             pkgs.pkg-config
             pkgs.python3Packages.pyocd
-            rumocaPackage
+            pkgs.zenoh
             hostCc
             pkgs.unzip
             pkgs.which
@@ -244,7 +252,6 @@
 
               export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
               export GNUARMEMB_TOOLCHAIN_PATH="''${GNUARMEMB_TOOLCHAIN_PATH:-${pkgs.gcc-arm-embedded}}"
-              export CUBS2_RUMOCA_EXECUTABLE="''${CUBS2_RUMOCA_EXECUTABLE:-${rumocaPackage}/bin/rumoca}"
               export CUBS2_WORKSPACE_ROOT="$workspace"
 
               if [ -d "$workspace/zephyr" ]; then
@@ -292,17 +299,40 @@
 
               zephyr_app_require_module_paths "$workspace"
             }
+
+            zephyr_app_run_logged() {
+              local log_file="$1"
+              shift
+
+              if [ "''${CUBS2_QUIET_LOGS:-0}" != "1" ]; then
+                "$@"
+                return $?
+              fi
+
+              mkdir -p "$(dirname "$log_file")"
+              "$@" >"$log_file" 2>&1
+              local rc=$?
+              if [ "$rc" -eq 0 ]; then
+                printf 'wrote log: %s\n' "$log_file"
+                return 0
+              fi
+
+              printf 'command failed with status %d: %s\n' "$rc" "$*" >&2
+              printf 'last %s lines from %s:\n' "''${CUBS2_LOG_TAIL_LINES:-200}" "$log_file" >&2
+              tail -n "''${CUBS2_LOG_TAIL_LINES:-200}" "$log_file" >&2 || true
+              return "$rc"
+            }
           '';
 
           mkWestApp =
-            name: text:
+            name: extraInputs: text:
             pkgs.writeShellApplication {
               inherit name;
-              runtimeInputs = baseTools;
+              runtimeInputs = baseTools ++ extraInputs;
               inherit text;
             };
 
-          cubs2-build = mkWestApp "cubs2-build" ''
+          cubs2-build = mkWestApp "cubs2-build" [ rumocaPackage ] ''
             ${commonScript}
 
             app="$(zephyr_app_find_app)"
@@ -317,10 +347,11 @@
             build_dir="''${CUBS2_BUILD_DIR:-$app/build-$board_slug}"
 
             cd "$workspace"
-            exec west build -b "$board" -d "$build_dir" "$app" "$@"
+            zephyr_app_run_logged "$build_dir/west-build.log" \
+              west build -b "$board" -d "$build_dir" "$app" "$@"
           '';
 
-          cubs2-build-native-sim = mkWestApp "cubs2-build-native-sim" ''
+          cubs2-build-native-sim = mkWestApp "cubs2-build-native-sim" [ rumocaPackage ] ''
             ${commonScript}
 
             app="$(zephyr_app_find_app)"
@@ -334,10 +365,11 @@
             build_dir="''${CUBS2_NATIVE_SIM_BUILD_DIR:-$app/build-${defaultNativeSimBoard}}"
 
             cd "$workspace"
-            exec west build -b "$board" -d "$build_dir" "$app" "$@"
+            zephyr_app_run_logged "$build_dir/west-build.log" \
+              west build -b "$board" -d "$build_dir" "$app" "$@"
           '';
 
-          cubs2-flash = mkWestApp "cubs2-flash" ''
+          cubs2-flash = mkWestApp "cubs2-flash" [ ] ''
             ${commonScript}
 
             app="$(zephyr_app_find_app)"
@@ -361,7 +393,7 @@
             exec west flash -d "$build_dir" "''${runner_args[@]}" "$@"
           '';
 
-          cubs2-menuconfig = mkWestApp "cubs2-menuconfig" ''
+          cubs2-menuconfig = mkWestApp "cubs2-menuconfig" [ rumocaPackage ] ''
             ${commonScript}
 
             app="$(zephyr_app_find_app)"
@@ -379,7 +411,7 @@
             exec west build -b "$board" -d "$build_dir" -t menuconfig "$app" "$@"
           '';
 
-          cubs2-west-update = mkWestApp "cubs2-west-update" ''
+          cubs2-west-update = mkWestApp "cubs2-west-update" [ ] ''
             ${commonScript}
 
             app="$(zephyr_app_find_app)"
@@ -453,15 +485,39 @@
             '';
           };
 
+          cubs2-native-sim-sil-test = pkgs.writeShellApplication {
+            name = "cubs2-native-sim-sil-test";
+            runtimeInputs = [
+              pkgs.coreutils
+              pkgs.zenoh
+              nativeSimSilPythonEnv
+              cubs2-build-native-sim
+            ];
+            text = ''
+              ${commonScript}
+
+              app="$(zephyr_app_find_app)"
+              zephyr_app_export_common "$app"
+              zephyr_app_require_workspace "$app"
+              "${cubs2-build-native-sim}/bin/cubs2-build-native-sim"
+
+              cd "$app"
+              exec "${nativeSimSilPythonEnv}/bin/python" \
+                tests/zephyr/run_native_sim_zenoh_sil.py "$@"
+            '';
+          };
+
           host-tools = pkgs.buildEnv {
             name = "cerebri-cubs2-host-tools";
             paths = baseTools ++ [
+              rumocaPackage
               cubs2-build
               cubs2-build-native-sim
               cubs2-flash
               cubs2-menuconfig
               cubs2-west-update
               cubs2-flight-sil-test
+              cubs2-native-sim-sil-test
               rumoca-check
             ];
           };
@@ -476,6 +532,7 @@
             cubs2-menuconfig
             cubs2-west-update
             cubs2-flight-sil-test
+            cubs2-native-sim-sil-test
             rumoca-check
             ;
 
@@ -530,6 +587,12 @@
             type = "app";
             program = "${packages.cubs2-flight-sil-test}/bin/cubs2-flight-sil-test";
             meta.description = "Run staged CUBS2 flight SIL checks and generate a track plot";
+          };
+
+          native-sim-sil-test = {
+            type = "app";
+            program = "${packages.cubs2-native-sim-sil-test}/bin/cubs2-native-sim-sil-test";
+            meta.description = "Run CUBS2 Zephyr native_sim SIL through Zenoh topics";
           };
         }
       );
@@ -610,7 +673,7 @@
                 export ZEPHYR_BASE="$PWD/zephyr"
               fi
 
-              echo "${appDisplayName} Nix shell: cubs2-west-update, cubs2-build, cubs2-build-native-sim, cubs2-flight-sil-test, cubs2-flash"
+              echo "${appDisplayName} Nix shell: cubs2-west-update, cubs2-build, cubs2-build-native-sim, cubs2-flight-sil-test, cubs2-native-sim-sil-test, cubs2-flash"
             '';
           };
         }
