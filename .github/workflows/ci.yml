@@ -75,9 +75,14 @@ jobs:
 
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
 
       - name: Cache Nix builds
         uses: DeterminateSystems/magic-nix-cache-action@v12
+        with:
+          use-flakehub: disabled
+          use-gha-cache: enabled
 
       - name: Run Rumoca fmt/lint
         working-directory: cerebri_cubs2
@@ -114,9 +119,14 @@ jobs:
 
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
 
       - name: Cache Nix builds
         uses: DeterminateSystems/magic-nix-cache-action@v12
+        with:
+          use-flakehub: disabled
+          use-gha-cache: enabled
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
@@ -174,9 +184,14 @@ jobs:
 
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
 
       - name: Cache Nix builds
         uses: DeterminateSystems/magic-nix-cache-action@v12
+        with:
+          use-flakehub: disabled
+          use-gha-cache: enabled
 
       - name: Run Modelica flight test
         working-directory: cerebri_cubs2
@@ -230,9 +245,14 @@ jobs:
 
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
 
       - name: Cache Nix builds
         uses: DeterminateSystems/magic-nix-cache-action@v12
+        with:
+          use-flakehub: disabled
+          use-gha-cache: enabled
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
@@ -249,6 +269,11 @@ jobs:
           nix $NIX_FLAGS run .#native-sim-sil-run -- \
             --sim build-native_sim/zephyr/zephyr.exe
 
+      - name: Build native_sim/native/64 executable
+        if: ${{ needs.release_tag.outputs.enabled == 'true' }}
+        working-directory: cerebri_cubs2
+        run: nix $NIX_FLAGS run .#build-native-sim-64
+
       - name: Stage native_sim binaries
         if: ${{ needs.release_tag.outputs.enabled == 'true' }}
         working-directory: cerebri_cubs2
@@ -264,6 +289,23 @@ jobs:
         with:
           name: cerebri-cubs2-native_sim
           path: cerebri_cubs2/dist/native_sim/*
+          if-no-files-found: error
+
+      - name: Stage native_sim/native/64 binaries
+        if: ${{ needs.release_tag.outputs.enabled == 'true' }}
+        working-directory: cerebri_cubs2
+        run: |
+          mkdir -p dist/native_sim_native_64
+          cp build-native_sim_native_64/zephyr/zephyr.exe dist/native_sim_native_64/native_sim_native_64-zephyr.exe
+          cp build-native_sim_native_64/zephyr/zephyr.elf dist/native_sim_native_64/native_sim_native_64-zephyr.elf
+          cp build-native_sim_native_64/zephyr/zephyr.map dist/native_sim_native_64/native_sim_native_64-zephyr.map
+
+      - name: Upload native_sim/native/64 binaries
+        if: ${{ needs.release_tag.outputs.enabled == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: cerebri-cubs2-native_sim_native_64
+          path: cerebri_cubs2/dist/native_sim_native_64/*
           if-no-files-found: error
 
       - name: Upload Zephyr SIL flight test artifacts
@@ -317,6 +359,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: cerebri-cubs2-native_sim
+          path: dist
+
+      - name: Download native_sim/native/64 binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: cerebri-cubs2-native_sim_native_64
           path: dist
 
       - name: Create or update GitHub release
