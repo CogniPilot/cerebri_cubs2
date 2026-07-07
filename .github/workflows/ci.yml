@@ -216,7 +216,7 @@ jobs:
       - modelica_flight_test
       - release_tag
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     concurrency:
       group: nix-cache-v2-${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: false
