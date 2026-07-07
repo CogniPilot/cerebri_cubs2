@@ -17,7 +17,6 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   NIX_FLAGS: >-
@@ -78,6 +77,13 @@ jobs:
         with:
           determinate: false
 
+      - name: Prefer GitHub Nix cache
+        run: |
+          # magic-nix-cache-action v12 probes this netrc path before attempting
+          # FlakeHub auth. The FlakeHub cache is disabled below, so an empty
+          # file avoids an unnecessary FlakeHub ID-token request.
+          install -m 0600 /dev/null "$RUNNER_TEMP/determinate-nix-installer-netrc"
+
       - name: Cache Nix builds
         uses: DeterminateSystems/magic-nix-cache-action@v12
         with:
@@ -121,6 +127,13 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v22
         with:
           determinate: false
+
+      - name: Prefer GitHub Nix cache
+        run: |
+          # magic-nix-cache-action v12 probes this netrc path before attempting
+          # FlakeHub auth. The FlakeHub cache is disabled below, so an empty
+          # file avoids an unnecessary FlakeHub ID-token request.
+          install -m 0600 /dev/null "$RUNNER_TEMP/determinate-nix-installer-netrc"
 
       - name: Cache Nix builds
         uses: DeterminateSystems/magic-nix-cache-action@v12
@@ -187,6 +200,13 @@ jobs:
         with:
           determinate: false
 
+      - name: Prefer GitHub Nix cache
+        run: |
+          # magic-nix-cache-action v12 probes this netrc path before attempting
+          # FlakeHub auth. The FlakeHub cache is disabled below, so an empty
+          # file avoids an unnecessary FlakeHub ID-token request.
+          install -m 0600 /dev/null "$RUNNER_TEMP/determinate-nix-installer-netrc"
+
       - name: Cache Nix builds
         uses: DeterminateSystems/magic-nix-cache-action@v12
         with:
@@ -247,6 +267,13 @@ jobs:
         uses: DeterminateSystems/nix-installer-action@v22
         with:
           determinate: false
+
+      - name: Prefer GitHub Nix cache
+        run: |
+          # magic-nix-cache-action v12 probes this netrc path before attempting
+          # FlakeHub auth. The FlakeHub cache is disabled below, so an empty
+          # file avoids an unnecessary FlakeHub ID-token request.
+          install -m 0600 /dev/null "$RUNNER_TEMP/determinate-nix-installer-netrc"
 
       - name: Cache Nix builds
         uses: DeterminateSystems/magic-nix-cache-action@v12
