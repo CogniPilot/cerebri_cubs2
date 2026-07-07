@@ -24,6 +24,20 @@ set(ZEPHYR_MODULES
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(cubs2 LANGUAGES C)
 
+if(CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064 AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+  # Zephyr's bare-metal GNU ld link uses -N, which creates a RWX load segment
+  # in the ELF. This image is not a hosted executable, so silence ld.bfd's
+  # generic RWX segment diagnostic for this firmware target.
+  zephyr_link_libraries(${LINKERFLAGPREFIX},--no-warn-rwx-segments)
+endif()
+
+if(TARGET native_simulator AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+  # Nix's multilib GCC wrapper searches both 32-bit and 64-bit library paths
+  # while native_sim links with -m32. Tell ld.bfd not to warn when skipping the
+  # incompatible 64-bit candidates it encounters before the matching libraries.
+  target_link_options(native_simulator INTERFACE -Wl,--no-warn-search-mismatch)
+endif()
+
 set(CUBS2_RUMOCA_VERSION "v0.9.11"
   CACHE STRING "Pinned Rumoca version used when CUBS2_RUMOCA_EXECUTABLE is not set"
 )
@@ -51,7 +65,7 @@ if(CUBS2_RUMOCA_EXECUTABLE)
 else()
   if(CUBS2_RUMOCA_VERSION STREQUAL "v0.9.11")
     message(WARNING
-      "FixedWingOuterLoop currently requires unreleased Rumoca vector fixes; "
+      "FixedWingOuterLoop currently requires Rumoca GALEC fixes after v0.9.11; "
       "set CUBS2_RUMOCA_EXECUTABLE until CUBS2_RUMOCA_VERSION is updated."
     )
   endif()
@@ -102,17 +116,17 @@ function(cubs2_add_efmi_control_model model_name)
       ${_header}
       ${_efmu_dir}/ProductionCode/manifest.xml
       ${_efmu_dir}/__content.xml
-    COMMAND ${CMAKE_COMMAND} -E rm -rf
-            ${_efmu_dir}
-            ${_efmu_file}
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${CUBS2_RUMOCA_GENERATED_DIR}
-    COMMAND ${CUBS2_RUMOCA_EXECUTABLE}
-            --cache-dir ${CMAKE_CURRENT_BINARY_DIR}/.rumoca-cache
-            compile ${_model_file}
-            --model ${model_name}
-            --target galec-production
-            --output ${CUBS2_RUMOCA_GENERATED_DIR}
-    COMMAND ${CMAKE_COMMAND} -E touch ${_stamp}
+    COMMAND ${CMAKE_COMMAND}
+            "-DCUBS2_RUMOCA_EXECUTABLE=${CUBS2_RUMOCA_EXECUTABLE}"
+            "-DCUBS2_RUMOCA_CACHE_DIR=${CMAKE_CURRENT_BINARY_DIR}/.rumoca-cache"
+            "-DCUBS2_RUMOCA_MODEL_FILE=${_model_file}"
+            "-DCUBS2_RUMOCA_MODEL_NAME=${model_name}"
+            "-DCUBS2_RUMOCA_TARGET=galec-production"
+            "-DCUBS2_RUMOCA_OUTPUT_DIR=${CUBS2_RUMOCA_GENERATED_DIR}"
+            "-DCUBS2_RUMOCA_EFMU_DIR=${_efmu_dir}"
+            "-DCUBS2_RUMOCA_EFMU_FILE=${_efmu_file}"
+            "-DCUBS2_RUMOCA_STAMP=${_stamp}"
+            -P ${CMAKE_CURRENT_LIST_DIR}/cmake/RunRumocaCompile.cmake
     DEPENDS
       ${_model_file}
       ${CUBS2_RUMOCA_EXECUTABLE}
@@ -139,6 +153,12 @@ add_dependencies(app cubs2_efmi_control_codegen)
 set_source_files_properties(${CUBS2_EFMI_CONTROL_SOURCES}
   PROPERTIES GENERATED TRUE
 )
+
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+  set_source_files_properties(${CUBS2_EFMI_CONTROL_SOURCES}
+    PROPERTIES COMPILE_OPTIONS -fno-var-tracking-assignments
+  )
+endif()
 
 target_sources(app PRIVATE
   ${CUBS2_EFMI_CONTROL_SOURCES}

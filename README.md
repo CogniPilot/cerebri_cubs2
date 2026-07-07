@@ -49,9 +49,10 @@ Inbound `ManualControlData` is a fixed-layout struct payload, `MocapFrame`
 remains a FlatBuffer table, and all outbound topics are fixed-layout struct
 payloads.
 
-The current vectorized Modelica source requires Rumoca fixes from the local
-`fix/galec-vector-issues` branch until those fixes are released. Point CMake at
-that compiler before building:
+The current Modelica source requires Rumoca GALEC fixes after `v0.9.11`.
+The Nix build apps use a Rumoca compiler pinned to commit
+`d5b12684b5454340bae846db3b15f75e1d041c7a`. For non-Nix builds, point CMake at
+a Rumoca compiler from that commit or newer:
 
 ```sh
 export CUBS2_RUMOCA_EXECUTABLE=~/git/rumoca/target/debug/rumoca

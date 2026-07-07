@@ -35,7 +35,7 @@ manifest:
       path: modules/lib/zros
     - name: csyn
       remote: cognipilot
-      revision: main # pin to a SHA once the Zephyr module lands upstream
+      revision: 56f9f3bdd6f7a9ba8318056e20fd20de06a378d2 # synapse_fbs 0.3.3
       path: modules/lib/csyn
     - name: zenoh-pico
       url: https://github.com/cognipilot/zenoh-pico.git

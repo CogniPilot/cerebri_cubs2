@@ -3,10 +3,11 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    rumoca.url = "github:CogniPilot/rumoca/d5b12684b5454340bae846db3b15f75e1d041c7a";
   };
 
   outputs =
-    { self, nixpkgs }:
+    { self, nixpkgs, rumoca }:
     let
       lib = nixpkgs.lib;
       supportedSystems = [
@@ -42,6 +43,7 @@
           pkgs = pkgsFor system;
           pythonEnv = mkPythonEnv pkgs;
           hostCc = if system == "x86_64-linux" then pkgs.gcc_multi else pkgs.stdenv.cc;
+          rumocaExecutable = "${rumoca.packages.${system}.rumoca}/bin/rumoca";
           hostMultilibTools = lib.optionals (system == "x86_64-linux") [
             pkgs.glibc_multi.dev
           ];
@@ -276,6 +278,10 @@
             }
           '';
 
+          rumocaScript = ''
+            export CUBS2_RUMOCA_EXECUTABLE="''${CUBS2_RUMOCA_EXECUTABLE:-${rumocaExecutable}}"
+          '';
+
           mkWestApp =
             name: text:
             pkgs.writeShellApplication {
@@ -292,6 +298,7 @@
             cubs2_require_workspace "$app"
             workspace="$CUBS2_WORKSPACE_ROOT"
 
+            ${rumocaScript}
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
 
             board="''${CUBS2_BOARD:-mr_vmu_tropic}"
@@ -310,6 +317,7 @@
             cubs2_require_workspace "$app"
             workspace="$CUBS2_WORKSPACE_ROOT"
 
+            ${rumocaScript}
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-host}"
 
             board="''${CUBS2_NATIVE_SIM_BOARD:-native_sim}"
@@ -351,6 +359,7 @@
             cubs2_require_workspace "$app"
             workspace="$CUBS2_WORKSPACE_ROOT"
 
+            ${rumocaScript}
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
 
             board="''${CUBS2_BOARD:-mr_vmu_tropic}"
@@ -467,6 +476,7 @@
           pkgs = pkgsFor system;
           pythonEnv = mkPythonEnv pkgs;
           packages = self.packages.${system};
+          rumocaExecutable = "${rumoca.packages.${system}.rumoca}/bin/rumoca";
         in
         {
           default = pkgs.mkShell {
@@ -480,6 +490,7 @@
             shellHook = ''
               export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
               export GNUARMEMB_TOOLCHAIN_PATH="''${GNUARMEMB_TOOLCHAIN_PATH:-${pkgs.gcc-arm-embedded}}"
+              export CUBS2_RUMOCA_EXECUTABLE="''${CUBS2_RUMOCA_EXECUTABLE:-${rumocaExecutable}}"
               export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
 
               cubs2_shell_find_app() {
