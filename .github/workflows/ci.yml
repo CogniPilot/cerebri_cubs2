@@ -1,4 +1,4 @@
-name: Build Binaries
+name: CI
 
 on:
   pull_request:
@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
   NIX_FLAGS: --quiet --option warn-dirty false
@@ -23,6 +24,9 @@ jobs:
   modelica:
     name: Rumoca fmt/lint
     runs-on: ubuntu-latest
+    concurrency:
+      group: nix-cache-${{ github.workflow }}-${{ github.run_id }}
+      cancel-in-progress: false
 
     steps:
       - name: Checkout
@@ -32,27 +36,22 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v35
+        uses: DeterminateSystems/nix-installer-action@v22
         with:
-          nix_conf: |
+          determinate: false
+          trust-runner-user: true
+          extra-conf: |
             experimental-features = nix-command flakes
             accept-flake-config = true
-            keep-env-derivations = true
             keep-outputs = true
+            keep-derivations = true
 
-      - name: Restore/save Nix store
-        uses: nix-community/cache-nix-action@v7
+      - name: Cache Nix builds
+        uses: DeterminateSystems/magic-nix-cache-action@v14
         with:
-          primary-key: nix-${{ runner.os }}-modelica-${{ hashFiles('cerebri_cubs2/flake.nix', 'cerebri_cubs2/flake.lock') }}
-          restore-prefixes-first-match: |
-            nix-${{ runner.os }}-modelica-
-            nix-${{ runner.os }}-
-          gc-max-store-size-linux: 4G
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-created: 0
-          purge-last-accessed: P7D
-          purge-primary-key: never
+          use-gha-cache: enabled
+          use-flakehub: disabled
+          diagnostic-endpoint: ""
 
       - name: Check Modelica
         working-directory: cerebri_cubs2
@@ -63,8 +62,12 @@ jobs:
     needs:
       - modelica
     runs-on: ubuntu-latest
+    concurrency:
+      group: nix-cache-${{ github.workflow }}-${{ github.run_id }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         target:
           - name: mr_vmu_tropic
@@ -90,28 +93,22 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v35
+        uses: DeterminateSystems/nix-installer-action@v22
         with:
-          nix_conf: |
+          determinate: false
+          trust-runner-user: true
+          extra-conf: |
             experimental-features = nix-command flakes
             accept-flake-config = true
-            keep-env-derivations = true
             keep-outputs = true
+            keep-derivations = true
 
-      - name: Restore/save Nix store
-        uses: nix-community/cache-nix-action@v7
+      - name: Cache Nix builds
+        uses: DeterminateSystems/magic-nix-cache-action@v14
         with:
-          primary-key: nix-${{ runner.os }}-build-${{ matrix.target.name }}-${{ hashFiles('cerebri_cubs2/flake.nix', 'cerebri_cubs2/flake.lock') }}
-          restore-prefixes-first-match: |
-            nix-${{ runner.os }}-build-${{ matrix.target.name }}-
-            nix-${{ runner.os }}-build-
-            nix-${{ runner.os }}-
-          gc-max-store-size-linux: 4G
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-created: 0
-          purge-last-accessed: P7D
-          purge-primary-key: never
+          use-gha-cache: enabled
+          use-flakehub: disabled
+          diagnostic-endpoint: ""
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
@@ -151,7 +148,12 @@ jobs:
 
   flight-sil:
     name: Flight SIL
+    needs:
+      - build
     runs-on: ubuntu-latest
+    concurrency:
+      group: nix-cache-${{ github.workflow }}-${{ github.run_id }}
+      cancel-in-progress: false
 
     steps:
       - name: Checkout
@@ -161,27 +163,22 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v35
+        uses: DeterminateSystems/nix-installer-action@v22
         with:
-          nix_conf: |
+          determinate: false
+          trust-runner-user: true
+          extra-conf: |
             experimental-features = nix-command flakes
             accept-flake-config = true
-            keep-env-derivations = true
             keep-outputs = true
+            keep-derivations = true
 
-      - name: Restore/save Nix store
-        uses: nix-community/cache-nix-action@v7
+      - name: Cache Nix builds
+        uses: DeterminateSystems/magic-nix-cache-action@v14
         with:
-          primary-key: nix-${{ runner.os }}-flight-sil-${{ hashFiles('cerebri_cubs2/flake.nix', 'cerebri_cubs2/flake.lock') }}
-          restore-prefixes-first-match: |
-            nix-${{ runner.os }}-flight-sil-
-            nix-${{ runner.os }}-
-          gc-max-store-size-linux: 4G
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-created: 0
-          purge-last-accessed: P7D
-          purge-primary-key: never
+          use-gha-cache: enabled
+          use-flakehub: disabled
+          diagnostic-endpoint: ""
 
       - name: Run staged flight SIL
         working-directory: cerebri_cubs2
@@ -218,9 +215,12 @@ jobs:
   native-sim-sil:
     name: Zephyr native_sim Zenoh SIL
     needs:
-      - build
+      - flight-sil
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: nix-cache-${{ github.workflow }}-${{ github.run_id }}
+      cancel-in-progress: false
 
     steps:
       - name: Checkout
@@ -230,27 +230,22 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: nixbuild/nix-quick-install-action@v35
+        uses: DeterminateSystems/nix-installer-action@v22
         with:
-          nix_conf: |
+          determinate: false
+          trust-runner-user: true
+          extra-conf: |
             experimental-features = nix-command flakes
             accept-flake-config = true
-            keep-env-derivations = true
             keep-outputs = true
+            keep-derivations = true
 
-      - name: Restore/save Nix store
-        uses: nix-community/cache-nix-action@v7
+      - name: Cache Nix builds
+        uses: DeterminateSystems/magic-nix-cache-action@v14
         with:
-          primary-key: nix-${{ runner.os }}-native-sim-sil-${{ hashFiles('cerebri_cubs2/flake.nix', 'cerebri_cubs2/flake.lock') }}
-          restore-prefixes-first-match: |
-            nix-${{ runner.os }}-native-sim-sil-
-            nix-${{ runner.os }}-
-          gc-max-store-size-linux: 4G
-          purge: true
-          purge-prefixes: nix-${{ runner.os }}-
-          purge-created: 0
-          purge-last-accessed: P7D
-          purge-primary-key: never
+          use-gha-cache: enabled
+          use-flakehub: disabled
+          diagnostic-endpoint: ""
 
       - name: Download native_sim executable
         uses: actions/download-artifact@v4

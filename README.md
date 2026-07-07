@@ -1,6 +1,6 @@
 # CUBS2
 
-[![Build Binaries](https://github.com/CogniPilot/cerebri_cubs2/actions/workflows/build-binaries.yml/badge.svg)](https://github.com/CogniPilot/cerebri_cubs2/actions/workflows/build-binaries.yml)
+[![CI](https://github.com/CogniPilot/cerebri_cubs2/actions/workflows/ci.yml/badge.svg)](https://github.com/CogniPilot/cerebri_cubs2/actions/workflows/ci.yml)
 
 `cerebri_cubs2` is a Zephyr fixed-wing control app for the CUBS2 remotely
 piloted aircraft.
