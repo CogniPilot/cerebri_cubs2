@@ -6,159 +6,111 @@
 // Keep helper functions and controller blocks in this file so generated code can
 // be traced back to one inspectable control model.
 
+function clip
+  input Real value;
+  input Real lower;
+  input Real upper;
+  output Real result;
+algorithm
+  result := min(max(value, lower), upper);
+annotation(
+  Inline = true);
+end clip;
+
+function wrapAngle
+  input Real angle(unit = "rad");
+  output Real result(unit = "rad");
+algorithm
+  // atan2(sin(theta), cos(theta)) keeps heading/pitch errors continuous across +/-pi.
+  result := atan2(sin(angle), cos(angle));
+annotation(
+  Inline = true);
+end wrapAngle;
+
+function lowPass
+  input Real sample[:];
+  input Real previous[size(sample, 1)];
+  input Real sampleWeight;
+  output Real result[size(sample, 1)];
+algorithm
+  result := sampleWeight * sample + (1.0 - sampleWeight) * previous;
+annotation(
+  Inline = true);
+end lowPass;
+
+function lowPassScalar
+  input Real sample;
+  input Real previous;
+  input Real sampleWeight;
+  output Real result;
+algorithm
+  result := sampleWeight * sample + (1.0 - sampleWeight) * previous;
+annotation(
+  Inline = true);
+end lowPassScalar;
+
+function rateLimit
+  input Real target;
+  input Real current;
+  input Real maxStep;
+  output Real result;
+algorithm
+  result := current + clip(target - current, -maxStep, maxStep);
+annotation(
+  Inline = true);
+end rateLimit;
+
 function vectorNorm
   input Real v[:];
   output Real result;
 algorithm
   result := sqrt(v * v);
+annotation(
+  Inline = true);
 end vectorNorm;
 
-// Scalar sampled PID controller with internal derivative, integral, and command state.
-block PidController
-  parameter Real dt(unit = "s") = 0.02;
-  parameter Boolean useInputDerivative = true;
-  parameter Real trim = 0.0 "trim command";
-  parameter Real kp = 0.0 "proportional gain";
-  parameter Real ki = 0.0 "integral gain";
-  parameter Real kd = 0.0 "derivative gain";
-  parameter Real integralMax = 1.0 "integral clamp";
-  parameter Real commandMin = -1.0 "minimum command";
-  parameter Real commandMax = 1.0 "maximum command";
+record VehicleParameters
+  Real g(unit = "m/s2") = 9.81 "standard gravity";
+  Real mass(unit = "kg") = 0.063 "FixedWingPlant.vehicle_mass";
+  Real thrustMax(unit = "N") = 0.30 "FixedWingPlant.thr_max";
+  Real trimThrust(unit = "N") = 0.1 "cruise drag at 4.3 m/s";
+  Real envelopeDrag(unit = "N") = 0.07 "cruise drag";
+  Real weight(unit = "N") = mass * g "aircraft weight";
+  Real drag(unit = "N") = envelopeDrag "drag estimate";
+end VehicleParameters;
 
-  discrete Boolean enabled(start = false);
-  discrete Real error(start = 0.0) "PID error [rad]";
-  discrete Real derivativeInput(start = 0.0) "external derivative input [rad/s]";
-  discrete Real feedforward(start = 0.0) "additive command";
+record PidParameters
+  Real dt(unit = "s") = 0.02;
+  Boolean useInputDerivative = true;
+  Real trim = 0.0;
+  Real kp = 0.0;
+  Real ki = 0.0;
+  Real kd = 0.0;
+  Real integralMax = 1.0;
+  Real commandMin = -1.0;
+  Real commandMax = 1.0;
+end PidParameters;
 
-  discrete output Real derivative(start = 0.0) "derivative term input [rad/s]";
-  discrete output Real integral(start = 0.0) "integrated error [rad*s]";
-  discrete output Real command(start = 0.0) "saturated command";
+record FlightState
+  Real position_m[3] = {0.0, 0.0, 0.0};
+  Real euler_rad[3] = {0.0, 0.0, 0.0};
+  Real velocity_m_s[3] = {0.0, 0.0, 0.0};
+  Real speed(unit = "m/s") = 0.0;
+  Real flightPathAngle(unit = "rad") = 0.0;
+  Real speedChange = 0.0;
+  Real eulerRate_rad_s[3] = {0.0, 0.0, 0.0};
+end FlightState;
 
-protected
-  discrete Real previousError(start = 0.0);
+record GuidanceSetpoints
+  Real speed(unit = "m/s") = 0.0;
+  Real flightPathAngle(unit = "rad") = 0.0;
+  Real heading(unit = "rad") = 0.0;
+  Real acceleration(unit = "m/s2") = 0.0;
+end GuidanceSetpoints;
 
-algorithm
-  when sample(0.0, dt) then
-    if enabled then
-      derivative :=
-        if useInputDerivative then
-          derivativeInput
-        else
-          (error - pre(previousError)) / dt;
-      integral := min(max(pre(integral) + error * dt, -integralMax), integralMax);
-      command :=
-        min(max(trim + kp * error + ki * integral + kd * derivative + feedforward,
-                commandMin),
-            commandMax);
-      previousError := error;
-    else
-      derivative := 0.0;
-      integral := pre(integral);
-      command := trim;
-      previousError := pre(previousError);
-    end if;
-  end when;
-end PidController;
-
-// Total Energy Control System for longitudinal thrust and pitch commands.
-block TECSController
-  parameter Real dt(unit = "s") = 0.02;
-  parameter Real g(unit = "m/s2") = 9.81 "standard gravity";
-  parameter Real mass(unit = "kg") = 0.063 "FixedWingPlant.vehicle_mass";
-  parameter Real thrustMax(unit = "N") = 0.30 "FixedWingPlant.thr_max";
-  parameter Real trimThrust(unit = "N") = 0.1 "cruise drag at 4.3 (L/D~9)";
-  parameter Real thrustKp = 0.01 "energy-rate damping";
-  parameter Real thrustKi = 0.25 "ramps to full thrust in ~1.5 s on a sink";
-  parameter Real energyRateIntegralMax = 3.0 "limit throttle-integral windup";
-  parameter Real pitchKp = 0.075;
-  parameter Real pitchKi = 0.216;
-  parameter Real distanceIntegralMax = 7.5;
-  parameter Real envelopeDrag(unit = "N") = 0.07 "cruise drag";
-  parameter Real pitchCommandLimit(unit = "rad") = 12.0 * 3.141592653589793 / 180.0
-    "limit climb pitch to stay below stall";
-
-  discrete Boolean enabled(start = false);
-  discrete Real des_a(start = 0.0);
-  discrete Real des_gamma(start = 0.0);
-  discrete Real gamma_est(start = 0.0);
-  discrete Real vdot_est(start = 0.0);
-
-  discrete output Real weight(unit = "N", start = 0.0);
-  discrete output Real drag(unit = "N", start = 0.0);
-  discrete output Real desiredSpecificAcceleration(start = 0.0);
-  discrete output Real energyRateError(start = 0.0);
-  discrete output Real energyRateIntegral(start = 0.0);
-  discrete output Real thrustUnsat(unit = "N", start = 0.0);
-  discrete output Real thrustCommand(unit = "N", start = 0.0);
-  discrete output Real distanceError(start = 0.0);
-  discrete output Real distanceIntegral(start = 0.0);
-  discrete output Real pitchUnsat(unit = "rad", start = 0.0);
-  discrete output Real pitchCommand(unit = "rad", start = 0.0);
-
-algorithm
-  when sample(0.0, dt) then
-    weight := mass * g;
-    drag := envelopeDrag;
-
-    if enabled then
-      desiredSpecificAcceleration :=
-        min(max(des_a, -drag / weight), (thrustMax - drag) / weight);
-
-      energyRateError :=
-        (des_gamma - gamma_est) + (desiredSpecificAcceleration - vdot_est) / g;
-      thrustUnsat :=
-        trimThrust
-        + weight * (thrustKp * (gamma_est + vdot_est / g)
-                    + thrustKi * pre(energyRateIntegral));
-      thrustCommand := min(max(thrustUnsat, 0.0), thrustMax);
-      if not ((thrustCommand >= thrustMax - 1e-9 and energyRateError > 0.0)
-              or (thrustCommand <= 1e-9 and energyRateError < 0.0)) then
-        energyRateIntegral :=
-          min(max(pre(energyRateIntegral) + energyRateError * dt,
-                  -energyRateIntegralMax), energyRateIntegralMax);
-      else
-        energyRateIntegral := pre(energyRateIntegral);
-      end if;
-
-      distanceError :=
-        (des_gamma - gamma_est) - (desiredSpecificAcceleration - vdot_est) / g;
-      pitchUnsat :=
-        pitchKi * pre(distanceIntegral) - pitchKp * (gamma_est - vdot_est / g);
-      pitchCommand := min(max(pitchUnsat, -pitchCommandLimit), pitchCommandLimit);
-      if not ((pitchCommand >= pitchCommandLimit - 1e-9 and distanceError > 0.0)
-              or (pitchCommand <= -pitchCommandLimit + 1e-9
-                  and distanceError < 0.0)) then
-        distanceIntegral :=
-          min(max(pre(distanceIntegral) + distanceError * dt,
-                  -distanceIntegralMax), distanceIntegralMax);
-      else
-        distanceIntegral := pre(distanceIntegral);
-      end if;
-    else
-      desiredSpecificAcceleration := 0.0;
-      energyRateError := 0.0;
-      energyRateIntegral := pre(energyRateIntegral);
-      thrustUnsat := trimThrust;
-      thrustCommand := trimThrust;
-      distanceError := 0.0;
-      distanceIntegral := pre(distanceIntegral);
-      pitchUnsat := 0.0;
-      pitchCommand := 0.0;
-    end if;
-  end when;
-end TECSController;
-
-model FixedWingOuterLoop
-  constant Real pi = 3.141592653589793;
-  constant Real dt(unit = "s") = 0.02
-    "50 Hz outer loop (lockstep: 2 plant steps of 0.01 per packet)";
-  constant Real zero3[3] = {0.0, 0.0, 0.0};
-  parameter Real g(unit = "m/s2") = 9.81 "standard gravity";
-
-  // PURT circuit, constant 3 m altitude.
-  constant Integer nRoutePoints = 7 "route points, including the launch origin";
-  constant Integer nSegments = nRoutePoints - 1 "flyable segments between route points";
-  parameter Real waypoints[nRoutePoints, 3] = [
+record RouteParameters
+  Integer nSegments = 6 "flyable segments between route points";
+  Real waypoints[7, 3] = [
     0.0,    0.0,  0.0;
     -4.0,  -5.0,  3.0;
     -3.0,   2.0,  3.0;
@@ -166,319 +118,492 @@ model FixedWingOuterLoop
     16.0,  -4.22, 3.0;
     6.88,  -5.1,  3.0;
     -4.0,  -5.0,  3.0] "route point rows are [x, y, z] [m]";
+  Real cruiseSpeed(unit = "m/s") = 4.0;
+  Real altitudeToFlightPathGain = 2.0;
+  Real speedToAccelerationGain = 1.0;
+  Real lookaheadTime(unit = "s") = 2.0;
+  Real lookaheadMin(unit = "m") = 3.0;
+  Real lookaheadMax(unit = "m") = 8.0;
+  Real waypointSwitchingDistance(unit = "m") = 3.0;
+end RouteParameters;
 
-  // Estimator and waypoint guidance.
+record TecsParameters
+  Real thrustKp = 0.01 "energy-rate damping";
+  Real thrustKi = 0.25 "ramps to full thrust in ~1.5 s on a sink";
+  Real energyRateIntegralMax = 3.0;
+  Real pitchKp = 0.075;
+  Real pitchKi = 0.216;
+  Real energyDistributionIntegralMax = 7.5;
+  Real pitchCommandLimit(unit = "rad") = 0.20943951023931953;
+end TecsParameters;
+
+record AttitudeParameters
+  Real takeoffAltitude(unit = "m") = 0.4;
+  Real takeoffElevator = 0.15;
+  Real stabilizerCommand(unit = "us") = 2000.0;
+  Real bankToElevatorFeedforwardGain = 1.5;
+  Real courseErrorGain = 1.20;
+  Real rollLimit(unit = "rad") = 0.5235987755982988;
+  Real rollRateLimit(unit = "rad/s") = 1.5707963267948966;
+  Real courseDeadband(unit = "rad") = 0.017453292519943295;
+end AttitudeParameters;
+
+block PidController
+  parameter PidParameters params = PidParameters();
+
+  discrete Boolean enabled(start = false);
+  discrete Real error(start = 0.0);
+  discrete Real derivativeInput(start = 0.0);
+  discrete Real feedforward(start = 0.0);
+
+  discrete output Real derivative(start = 0.0);
+  discrete output Real integral(start = 0.0);
+  discrete output Real command(start = 0.0);
+
+protected
+  discrete Real previousError(start = 0.0);
+
+algorithm
+  when sample(0.0, params.dt) then
+    if enabled then
+      derivative :=
+        if params.useInputDerivative then
+          derivativeInput
+        else
+          (error - pre(previousError)) / params.dt;
+      integral :=
+        clip(pre(integral) + error * params.dt,
+             -params.integralMax,
+             params.integralMax);
+      command :=
+        clip(params.trim
+             + params.kp * error
+             + params.ki * integral
+             + params.kd * derivative
+             + feedforward,
+             params.commandMin,
+             params.commandMax);
+      previousError := error;
+    else
+      derivative := 0.0;
+      integral := pre(integral);
+      command := params.trim;
+      previousError := pre(previousError);
+    end if;
+  end when;
+end PidController;
+
+block StateEstimator
+  parameter Real dt(unit = "s") = 0.02;
   parameter Real filterCutoffHz(unit = "Hz") = 10.0;
-  parameter Real vCruise(unit = "m/s") = 4.0 "cruise speed";
-  parameter Real K_h = 2.0 "glide-slope gain";
-  parameter Real K_V = 1.0 "desired acceleration gain";
-  parameter Real lookaheadTime(unit = "s") = 2.0;
-  parameter Real lookaheadMin(unit = "m") = 3.0;
-  parameter Real lookaheadMax(unit = "m") = 8.0;
-  parameter Real waypointSwitchingDistance(unit = "m") = 3.0
-    "switch only when within 3m (< 6m legs) so it visits every wp";
+  constant Real pi = 3.141592653589793;
+  constant Real zero3[3] = {0.0, 0.0, 0.0};
 
-  PidController pitch_pid(
-    dt = dt,
-    useInputDerivative = true,
-    trim = 0.0,
-    kp = 0.4,
-    ki = 0.4,
-    kd = 0.0,
-    integralMax = 0.5,
-    commandMin = -1.0,
-    commandMax = 1.0);
+  input Real position_m[3];
+  input Real euler_rad[3];
+  discrete output FlightState estimate = FlightState();
 
-  PidController heading_pid(
-    dt = dt,
-    useInputDerivative = false,
-    trim = 0.0,
-    kp = 1.2,
-    ki = 0.05,
-    kd = 0.35,
-    integralMax = 0.4,
-    commandMin = -1.0,
-    commandMax = 1.0);
+protected
+  discrete Boolean started(start = false);
+  discrete Real previousPosition_m[3](each start = 0.0);
+  discrete Real previousEuler_rad[3](each start = 0.0);
+  discrete Real previousSpeed(start = 0.0);
+  discrete Real rawVelocity_m_s[3];
+  discrete Real rawEulerRate_rad_s[3];
+  discrete Real rawSpeed;
+  discrete Real rawFlightPathAngle;
+  discrete Real rawSpeedChange;
+  discrete Real filterAlpha;
 
-  TECSController tecs(dt = dt, g = g);
+algorithm
+  when sample(0.0, dt) then
+    filterAlpha := exp(-2.0 * pi * filterCutoffHz * dt);
 
-  // Pitch stick feed-forward.
-  parameter Real K_phi_elev = 1.5
-    "turn comp: pitch up with bank to hold a LEVEL turn (tighter radius)";
+    if not pre(started) then
+      estimate.position_m := position_m;
+      estimate.euler_rad := euler_rad;
+      estimate.velocity_m_s := zero3;
+      estimate.eulerRate_rad_s := zero3;
+      estimate.speed := 0.0;
+      estimate.flightPathAngle := 0.0;
+      estimate.speedChange := 0.0;
+      started := true;
+    else
+      for i in 1:3 loop
+        rawVelocity_m_s[i] := (position_m[i] - pre(previousPosition_m[i])) / dt;
+        rawEulerRate_rad_s[i] :=
+          wrapAngle(euler_rad[i] - pre(previousEuler_rad[i])) / dt;
+      end for;
 
-  // Heading to bank shaping.
-  parameter Real kChi = 1.20;
-  parameter Real phiLim = 30.0 * pi / 180.0;
-  parameter Real phiDotLim = 90.0 * pi / 180.0;
-  parameter Real chiDeadband = 1.0 * pi / 180.0;
+      rawSpeed := vectorNorm(rawVelocity_m_s);
+      rawFlightPathAngle :=
+        asin(clip(rawVelocity_m_s[3] / max(rawSpeed, 1e-5), -1.0, 1.0));
+      rawSpeedChange := rawSpeed - pre(previousSpeed);
 
-  // Open-loop launch.
-  parameter Real takeoffAltitude(unit = "m") = 0.4 "airborne when z above this";
-  parameter Real takeoffElev = 0.15 "open-loop launch pitch-up elevator stick [-1, 1]";
-  parameter Real stabilizerCmd(unit = "us") = 2000.0
-    "force onboard stabilizing PWM command";
+      estimate.position_m := lowPass(position_m, pre(estimate.position_m), filterAlpha);
+      estimate.euler_rad := lowPass(euler_rad, pre(estimate.euler_rad), filterAlpha);
+      estimate.velocity_m_s :=
+        lowPass(rawVelocity_m_s, pre(estimate.velocity_m_s), filterAlpha);
+      estimate.eulerRate_rad_s :=
+        lowPass(rawEulerRate_rad_s, pre(estimate.eulerRate_rad_s), filterAlpha);
+      estimate.speed := lowPassScalar(rawSpeed, pre(estimate.speed), filterAlpha);
+      estimate.flightPathAngle :=
+        lowPassScalar(rawFlightPathAngle, pre(estimate.flightPathAngle), filterAlpha);
+      estimate.speedChange :=
+        lowPassScalar(rawSpeedChange, pre(estimate.speedChange), filterAlpha);
+    end if;
 
-  // Inputs: vehicle pose. Euler angles are [roll, pitch, yaw] in radians
-  // after the upstream frame/sign conversion in src/main.c.
-  input Real position_m[3](each unit = "m") "current sample [x, y, z] [m]";
-  input Real euler_rad[3](each unit = "rad") "current sample [roll, pitch, yaw] [rad]";
+    previousPosition_m := position_m;
+    previousEuler_rad := euler_rad;
+    previousSpeed := estimate.speed;
+  end when;
+end StateEstimator;
 
-  // Outputs: AETR + stabilizer + telemetry.
+block RouteGuidance
+  parameter Real dt(unit = "s") = 0.02;
+  parameter RouteParameters route = RouteParameters();
+
+  input Boolean airborne;
+  input FlightState estimate = FlightState();
+
+  discrete output Integer currentWaypoint(min = 1, max = 6, start = 1);
+  discrete output GuidanceSetpoints setpoints = GuidanceSetpoints();
+
+protected
+  discrete Integer segmentEndIndex(min = 2, max = 7, start = 2);
+  discrete Real segmentStart[3];
+  discrete Real segmentEnd[3];
+  discrete Real positionToWaypoint[3];
+  discrete Real horizontalDistanceToWaypoint;
+  discrete Real segmentVector[3];
+  discrete Real segmentLength;
+  discrete Real segmentHeading;
+  discrete Real segmentUnit[2];
+  discrete Real segmentNormal[2];
+  discrete Real positionFromSegmentStart[2];
+  discrete Real distanceFromSegmentStart;
+  discrete Real distanceToSegmentEnd;
+  discrete Real crossTrackError;
+  discrete Real nominalLookahead;
+  discrete Real effectiveLookahead;
+  discrete Real lookaheadHeading;
+
+algorithm
+  when sample(0.0, dt) then
+    currentWaypoint := pre(currentWaypoint);
+    segmentEndIndex := currentWaypoint + 1;
+    segmentStart := route.waypoints[currentWaypoint, :];
+    segmentEnd := route.waypoints[segmentEndIndex, :];
+
+    positionToWaypoint := segmentEnd - estimate.position_m;
+    horizontalDistanceToWaypoint := vectorNorm(positionToWaypoint[1:2]);
+    segmentVector := segmentEnd - segmentStart;
+    segmentLength := max(vectorNorm(segmentVector), 1e-6);
+    segmentHeading := atan2(segmentVector[2], segmentVector[1]);
+    segmentUnit := segmentVector[1:2] / segmentLength;
+    segmentNormal := {-segmentUnit[2], segmentUnit[1]};
+    positionFromSegmentStart := estimate.position_m[1:2] - segmentStart[1:2];
+    distanceFromSegmentStart := positionFromSegmentStart * segmentUnit;
+    distanceToSegmentEnd :=
+      max(0.0, segmentLength - clip(distanceFromSegmentStart, 0.0, segmentLength));
+    crossTrackError := positionFromSegmentStart * segmentNormal;
+
+    nominalLookahead :=
+      clip(vectorNorm(estimate.velocity_m_s[1:2]) * route.lookaheadTime,
+           route.lookaheadMin,
+           route.lookaheadMax);
+    effectiveLookahead :=
+      max(route.lookaheadMin, min(nominalLookahead, distanceToSegmentEnd));
+    lookaheadHeading :=
+      segmentHeading + atan2(-crossTrackError, max(effectiveLookahead, 1e-6));
+
+    if not airborne then
+      setpoints.speed := 0.0;
+      setpoints.flightPathAngle := 0.0;
+      setpoints.heading := 0.0;
+      setpoints.acceleration := 0.0;
+    else
+      setpoints.speed := route.cruiseSpeed;
+      setpoints.flightPathAngle :=
+        clip(route.altitudeToFlightPathGain * positionToWaypoint[3]
+             / max(horizontalDistanceToWaypoint, route.lookaheadMin),
+             -0.12,
+             0.12);
+      setpoints.heading := wrapAngle(lookaheadHeading);
+      setpoints.acceleration :=
+        route.speedToAccelerationGain * (setpoints.speed - abs(estimate.speed));
+
+      if distanceToSegmentEnd < route.waypointSwitchingDistance then
+        currentWaypoint :=
+          if currentWaypoint >= route.nSegments then 1 else currentWaypoint + 1;
+      end if;
+    end if;
+  end when;
+end RouteGuidance;
+
+// TECS follows NASA CR-178285: throttle controls total energy rate while
+// pitch redistributes energy between altitude/flight-path and speed.
+block TECSController
+  parameter Real dt(unit = "s") = 0.02;
+  parameter VehicleParameters vehicle = VehicleParameters();
+  parameter TecsParameters tecs = TecsParameters();
+
+  input Boolean enabled;
+  input GuidanceSetpoints setpoints = GuidanceSetpoints();
+  input Real flightPathAngleEstimate(start = 0.0);
+  input Real speedChangeEstimate(start = 0.0);
+
+  discrete output Real boundedAcceleration(start = 0.0);
+  discrete output Real energyRateError(start = 0.0);
+  discrete output Real energyRateIntegral(start = 0.0);
+  discrete output Real unsaturatedThrustCommand(unit = "N", start = 0.0);
+  discrete output Real thrustCommand(unit = "N", start = 0.0);
+  discrete output Real energyDistributionError(start = 0.0);
+  discrete output Real energyDistributionIntegral(start = 0.0);
+  discrete output Real unsaturatedPitchCommand(unit = "rad", start = 0.0);
+  discrete output Real pitchCommand(unit = "rad", start = 0.0);
+
+algorithm
+  when sample(0.0, dt) then
+    if enabled then
+      boundedAcceleration :=
+        clip(setpoints.acceleration,
+             -vehicle.drag / vehicle.weight,
+             (vehicle.thrustMax - vehicle.drag) / vehicle.weight);
+
+      energyRateError :=
+        (setpoints.flightPathAngle - flightPathAngleEstimate)
+        + (boundedAcceleration - speedChangeEstimate) / vehicle.g;
+      unsaturatedThrustCommand :=
+        vehicle.trimThrust
+        + vehicle.weight
+          * (tecs.thrustKp * (flightPathAngleEstimate + speedChangeEstimate / vehicle.g)
+             + tecs.thrustKi * pre(energyRateIntegral));
+      thrustCommand := clip(unsaturatedThrustCommand, 0.0, vehicle.thrustMax);
+
+      if not ((thrustCommand >= vehicle.thrustMax - 1e-9 and energyRateError > 0.0)
+              or (thrustCommand <= 1e-9 and energyRateError < 0.0)) then
+        energyRateIntegral :=
+          clip(pre(energyRateIntegral) + energyRateError * dt,
+               -tecs.energyRateIntegralMax,
+               tecs.energyRateIntegralMax);
+      else
+        energyRateIntegral := pre(energyRateIntegral);
+      end if;
+
+      energyDistributionError :=
+        (setpoints.flightPathAngle - flightPathAngleEstimate)
+        - (boundedAcceleration - speedChangeEstimate) / vehicle.g;
+      unsaturatedPitchCommand :=
+        tecs.pitchKi * pre(energyDistributionIntegral)
+        - tecs.pitchKp * (flightPathAngleEstimate - speedChangeEstimate / vehicle.g);
+      pitchCommand :=
+        clip(unsaturatedPitchCommand, -tecs.pitchCommandLimit, tecs.pitchCommandLimit);
+
+      if not ((pitchCommand >= tecs.pitchCommandLimit - 1e-9
+                and energyDistributionError > 0.0)
+              or (pitchCommand <= -tecs.pitchCommandLimit + 1e-9
+                  and energyDistributionError < 0.0)) then
+        energyDistributionIntegral :=
+          clip(pre(energyDistributionIntegral) + energyDistributionError * dt,
+               -tecs.energyDistributionIntegralMax,
+               tecs.energyDistributionIntegralMax);
+      else
+        energyDistributionIntegral := pre(energyDistributionIntegral);
+      end if;
+    else
+      boundedAcceleration := 0.0;
+      energyRateError := 0.0;
+      energyRateIntegral := pre(energyRateIntegral);
+      unsaturatedThrustCommand := vehicle.trimThrust;
+      thrustCommand := vehicle.trimThrust;
+      energyDistributionError := 0.0;
+      energyDistributionIntegral := pre(energyDistributionIntegral);
+      unsaturatedPitchCommand := 0.0;
+      pitchCommand := 0.0;
+    end if;
+  end when;
+end TECSController;
+
+block AttitudeController
+  parameter Real dt(unit = "s") = 0.02;
+  parameter VehicleParameters vehicle = VehicleParameters();
+  parameter AttitudeParameters params = AttitudeParameters();
+  parameter PidParameters pitchPid =
+    PidParameters(dt = dt, useInputDerivative = true, kp = 0.4, ki = 0.4,
+                  integralMax = 0.5);
+  parameter PidParameters headingPid =
+    PidParameters(dt = dt, useInputDerivative = false, kp = 1.2, ki = 0.05,
+                  kd = 0.35, integralMax = 0.4);
+
+  PidController pitchController(params = pitchPid);
+  PidController headingController(params = headingPid);
+
+  input Boolean airborne;
+  input GuidanceSetpoints setpoints = GuidanceSetpoints();
+  input FlightState estimate = FlightState();
+  input Real tecsPitchCommand(unit = "rad", start = 0.0);
+  input Real tecsThrustCommand(unit = "N", start = 0.0);
+
   discrete output Real aileron(start = 0.0);
   discrete output Real elevator(start = 0.0);
   discrete output Real throttle(start = 0.7);
   discrete output Real rudder(start = 0.0);
-  discrete output Real stabilizer(start = 2000.0);
+  discrete output Real rollCommand(start = 0.0);
+  discrete output Real courseError(start = 0.0);
+
+protected
+  discrete Real rollCommandState(start = 0.0);
+  discrete Real pitchNoseUp;
+  discrete Real turnPitchRate;
+  discrete Real pitchRateError;
+  discrete Real loadFactorExcess;
+  discrete Real bankElevatorFeedforward;
+  discrete Real course;
+  discrete Real desiredCourseRate;
+  discrete Real desiredRoll;
+  discrete Real yawError;
+
+algorithm
+  when sample(0.0, dt) then
+    if not airborne then
+      throttle := 1.0;
+      elevator := params.takeoffElevator;
+      aileron := 0.0;
+      rudder := 0.0;
+      rollCommandState := pre(rollCommandState);
+      rollCommand := rollCommandState;
+      courseError := 0.0;
+
+      pitchController.enabled := false;
+      pitchController.error := 0.0;
+      pitchController.derivativeInput := 0.0;
+      pitchController.feedforward := 0.0;
+      headingController.enabled := false;
+      headingController.error := 0.0;
+      headingController.derivativeInput := 0.0;
+      headingController.feedforward := 0.0;
+    else
+      pitchNoseUp := -estimate.euler_rad[2];
+      pitchRateError :=
+        sin(estimate.euler_rad[1]) * cos(pitchNoseUp) * tan(estimate.euler_rad[1])
+        * vehicle.g / max(estimate.speed, 1e-5)
+        - estimate.eulerRate_rad_s[2];
+      loadFactorExcess := 1.0 / max(cos(estimate.euler_rad[1]), 1e-5) - 1.0;
+      bankElevatorFeedforward := params.bankToElevatorFeedforwardGain * loadFactorExcess;
+      throttle := clip(tecsThrustCommand / vehicle.thrustMax, 0.0, 1.0);
+
+      course := atan2(estimate.velocity_m_s[2], estimate.velocity_m_s[1]);
+      courseError := -wrapAngle(setpoints.heading - course);
+      if abs(courseError) < params.courseDeadband then
+        courseError := 0.0;
+      end if;
+
+      desiredCourseRate := params.courseErrorGain * courseError;
+      desiredRoll :=
+        clip(atan2(max(estimate.speed, 0.05) * desiredCourseRate, vehicle.g),
+             -params.rollLimit,
+             params.rollLimit);
+      desiredRoll :=
+        rateLimit(desiredRoll, pre(rollCommandState), params.rollRateLimit * dt);
+      rollCommandState := clip(desiredRoll, -params.rollLimit, params.rollLimit);
+      rollCommand := rollCommandState;
+      yawError := wrapAngle(setpoints.heading - estimate.euler_rad[3]);
+
+      pitchController.enabled := true;
+      pitchController.error := wrapAngle(tecsPitchCommand - pitchNoseUp);
+      pitchController.derivativeInput := pitchRateError;
+      pitchController.feedforward := bankElevatorFeedforward;
+      headingController.enabled := true;
+      headingController.error := yawError;
+      headingController.derivativeInput := 0.0;
+      headingController.feedforward := 0.0;
+
+      elevator := pre(pitchController.command);
+      aileron := pre(headingController.command);
+      rudder := 0.0;
+    end if;
+  end when;
+end AttitudeController;
+
+model FixedWingOuterLoop
+  constant Real pi = 3.141592653589793;
+  parameter Real dt(unit = "s") = 0.02
+    "50 Hz outer loop (lockstep: 2 plant steps of 0.01 per packet)";
+  parameter VehicleParameters vehicle = VehicleParameters();
+  parameter RouteParameters route = RouteParameters();
+  parameter TecsParameters tecsParams = TecsParameters();
+  parameter AttitudeParameters attitudeParams = AttitudeParameters();
+  parameter Real filterCutoffHz(unit = "Hz") = 10.0;
+
+  StateEstimator estimator(dt = dt, filterCutoffHz = filterCutoffHz);
+  RouteGuidance guidance(dt = dt, route = route);
+  TECSController tecs(dt = dt, vehicle = vehicle, tecs = tecsParams);
+  AttitudeController attitude(dt = dt, vehicle = vehicle, params = attitudeParams);
+
+  input Real position_m[3](each unit = "m") "current sample [x, y, z] [m]";
+  input Real euler_rad[3](each unit = "rad") "current sample [roll, pitch, yaw] [rad]";
+
+  discrete output Real aileron(start = 0.0) "aileron stick [-1, 1]";
+  discrete output Real elevator(start = 0.0) "elevator stick [-1, 1]";
+  discrete output Real throttle(start = 0.7) "throttle stick [0, 1]";
+  discrete output Real rudder(start = 0.0) "rudder stick [-1, 1]";
+  discrete output Real stabilizer(start = 2000.0) "onboard stabilizer PWM [us]";
   discrete output Boolean airborne(start = false);
-  // Segment index: 1 means waypoints[1, :] -> waypoints[2, :].
-  discrete output Integer current_wp(min = 1, max = 6, start = 1);
-  discrete output Real des_v(start = 0.0);
-  discrete output Real des_gamma(start = 0.0);
-  discrete output Real des_heading(start = 0.0);
-  discrete output Real des_a(start = 0.0);
-  discrete output Real phi_cmd(start = 0.0);
-  discrete output Real chi_err(start = 0.0);
-  discrete output Real position_est_m[3](each start = 0.0) "filtered [x, y, z] [m]";
-  discrete output Real euler_est_rad[3](each start = 0.0)
-    "filtered [roll, pitch, yaw] [rad]";
-  discrete output Real velocity_est_m_s[3](each start = 0.0)
-    "filtered [vx, vy, vz] [m/s]";
-  discrete output Real v_est(start = 0.0);
-  discrete output Real gamma_est(start = 0.0);
-  discrete output Real vdot_est(start = 0.0);
-  discrete output Real euler_rate_est_rad_s[3](each start = 0.0)
-    "filtered [roll, pitch, yaw] rates [rad/s]";
+  discrete output Integer currentWaypoint(min = 1, max = 6, start = 1);
+  discrete output Real desiredSpeed(start = 0.0);
+  discrete output Real desiredFlightPathAngle(start = 0.0);
+  discrete output Real desiredHeading(start = 0.0);
+  discrete output Real desiredAcceleration(start = 0.0);
+  discrete output Real rollCommand(start = 0.0);
+  discrete output Real courseError(start = 0.0);
+  discrete output Real positionEstimate_m[3](each start = 0.0);
+  discrete output Real eulerEstimate_rad[3](each start = 0.0);
+  discrete output Real velocityEstimate_m_s[3](each start = 0.0);
+  discrete output Real speedEstimate(start = 0.0);
+  discrete output Real flightPathAngleEstimate(start = 0.0);
+  discrete output Real speedChangeEstimate(start = 0.0);
+  discrete output Real eulerRateEstimate_rad_s[3](each start = 0.0);
 
-  protected
-    discrete Boolean started(start = false);
-    discrete Real prev_position_m[3](each start = 0.0) "previous sample [x, y, z] [m]";
-    discrete Real prev_euler_rad[3](each start = 0.0)
-      "previous sample [roll, pitch, yaw] [rad]";
-    discrete Real prev_speed(start = 0.0);
-    discrete Real time_s(start = 0.0);
-    discrete Real phi_cmd_state(start = 0.0);
+algorithm
+  when sample(0.0, dt) then
+    estimator.position_m := position_m;
+    estimator.euler_rad := euler_rad;
 
-    discrete Real alpha;
-    discrete Real velocity_new_m_s[3] "finite-difference velocity [vx, vy, vz] [m/s]";
-    discrete Real euler_rate_new_rad_s[3]
-      "finite-difference Euler rates [roll, pitch, yaw] [rad/s]";
-    discrete Real speed_new, gamma_new, vdot_new;
-    discrete Real next_wp[3];
-    discrete Real prev_wp[3];
-    discrete Integer next_wp_index(min = 2, max = 7, start = 2);
-    discrete Real position_error[3];
-    discrete Real horz_dist_err;
-    discrete Real path[3];
-    discrete Real path_len, path_angle;
-    discrete Real path_unit[2], path_normal[2], pose_from_prev[2];
-    discrete Real along_track_err_w0, along_track_err_w1, cross_track_err;
-    discrete Real lookahead_nom, lookahead_eff, lookahead_heading, switch_threshold;
-    discrete Real pitch_ned, err_pitch, q_turn, err_q, nz_excess, ele_ff_phi;
-    discrete Real chi, chi_dot_des, phi_des, dphi_max;
-    discrete Real err_yaw;
+    airborne := pre(airborne) or (position_m[3] > attitudeParams.takeoffAltitude);
+    guidance.airborne := airborne;
+    guidance.estimate := estimator.estimate;
 
-  algorithm
-    when sample(0.0, dt) then
-      alpha := exp(-2.0 * pi * filterCutoffHz * dt);
-      current_wp := pre(current_wp);
+    tecs.enabled := airborne;
+    tecs.setpoints := guidance.setpoints;
+    tecs.flightPathAngleEstimate := estimator.estimate.flightPathAngle;
+    tecs.speedChangeEstimate := estimator.estimate.speedChange;
 
-      if not pre(started) then
-        // First step: seed the estimator from the current pose, zero the rates.
-        prev_position_m := position_m;
-        prev_euler_rad := euler_rad;
-        prev_speed := 0.0;
-        position_est_m := position_m;
-        euler_est_rad := euler_rad;
-        velocity_est_m_s := zero3;
-        euler_rate_est_rad_s := zero3;
-        v_est := 0.0;
-        gamma_est := 0.0;
-        vdot_est := 0.0;
-        started := true;
-      else
-        // State estimation: finite difference + exponential low-pass.
-        for i in 1:3 loop
-          velocity_new_m_s[i] := (position_m[i] - pre(prev_position_m[i])) / dt;
-          euler_rate_new_rad_s[i] :=
-            atan2(sin(euler_rad[i] - pre(prev_euler_rad[i])),
-                  cos(euler_rad[i] - pre(prev_euler_rad[i]))) / dt;
-        end for;
-        speed_new := vectorNorm(velocity_new_m_s);
-        gamma_new :=
-          asin(min(max(velocity_new_m_s[3] / max(speed_new, 1e-5), -1.0), 1.0));
-        vdot_new := speed_new - pre(prev_speed);
+    attitude.airborne := airborne;
+    attitude.setpoints := guidance.setpoints;
+    attitude.estimate := estimator.estimate;
+    attitude.tecsPitchCommand := pre(tecs.pitchCommand);
+    attitude.tecsThrustCommand := pre(tecs.thrustCommand);
 
-        for i in 1:3 loop
-          position_est_m[i] :=
-            alpha * position_m[i] + (1.0 - alpha) * pre(position_est_m[i]);
-          euler_est_rad[i] :=
-            alpha * euler_rad[i] + (1.0 - alpha) * pre(euler_est_rad[i]);
-          velocity_est_m_s[i] :=
-            alpha * velocity_new_m_s[i] + (1.0 - alpha) * pre(velocity_est_m_s[i]);
-          euler_rate_est_rad_s[i] :=
-            alpha * euler_rate_new_rad_s[i]
-            + (1.0 - alpha) * pre(euler_rate_est_rad_s[i]);
-        end for;
-        v_est := alpha * speed_new + (1.0 - alpha) * pre(v_est);
-        gamma_est := alpha * gamma_new + (1.0 - alpha) * pre(gamma_est);
-        vdot_est := alpha * vdot_new + (1.0 - alpha) * pre(vdot_est);
-      end if;
+    aileron := attitude.aileron;
+    elevator := attitude.elevator;
+    throttle := attitude.throttle;
+    rudder := attitude.rudder;
+    stabilizer := attitudeParams.stabilizerCommand;
+    rollCommand := attitude.rollCommand;
+    courseError := attitude.courseError;
 
-      // Select the active path segment directly by bounded waypoint index.
-      next_wp_index := current_wp + 1;
-      prev_wp := {
-        waypoints[current_wp, 1],
-        waypoints[current_wp, 2],
-        waypoints[current_wp, 3]
-      };
-      next_wp := {
-        waypoints[next_wp_index, 1],
-        waypoints[next_wp_index, 2],
-        waypoints[next_wp_index, 3]
-      };
-
-      position_error := next_wp - position_est_m;
-      horz_dist_err := vectorNorm({position_error[1], position_error[2]});
-      path := next_wp - prev_wp;
-      path_len := max(vectorNorm(path), 1e-6);
-      path_angle := atan2(path[2], path[1]);
-      path_unit := {path[1], path[2]} / path_len;
-      path_normal := {-path_unit[2], path_unit[1]};
-      pose_from_prev :=
-        {position_est_m[1], position_est_m[2]} - {prev_wp[1], prev_wp[2]};
-      along_track_err_w0 := pose_from_prev * path_unit;
-      along_track_err_w1 :=
-        max(0.0, path_len - min(max(along_track_err_w0, 0.0), path_len));
-      cross_track_err := pose_from_prev * path_normal;
-      lookahead_nom := min(max(vectorNorm({velocity_est_m_s[1], velocity_est_m_s[2]})
-                               * lookaheadTime,
-                               lookaheadMin), lookaheadMax);
-      lookahead_eff := max(lookaheadMin, min(lookahead_nom, along_track_err_w1));
-      lookahead_heading :=
-        path_angle + atan2(-cross_track_err, max(lookahead_eff, 1e-6));
-
-      // Latch airborne once above takeoff altitude.
-      // Recomputing z>takeoffAltitude every step meant any altitude dip below
-      // 0.4 m in a turn flipped back to open-loop launch (full throttle, pitch
-      // up), creating a porpoise limit cycle. Latch so transient dips stay in
-      // cruise guidance.
-      airborne := pre(airborne) or (position_m[3] > takeoffAltitude);
-      time_s := pre(time_s) + dt;
-
-      if not airborne then
-        // Open-loop launch: full throttle, pitch up.
-        throttle := 1.0;
-        elevator := takeoffElev;
-        aileron := 0.0;
-        rudder := 0.0;
-        des_v := 0.0;
-        des_gamma := 0.0;
-        des_heading := 0.0;
-        des_a := 0.0;
-        pitch_ned := 0.0;
-        err_pitch := 0.0;
-        q_turn := 0.0;
-        err_q := 0.0;
-        nz_excess := 0.0;
-        ele_ff_phi := 0.0;
-        chi := 0.0;
-        chi_err := 0.0;
-        chi_dot_des := 0.0;
-        phi_des := pre(phi_cmd_state);
-        dphi_max := phiDotLim * dt;
-        phi_cmd_state := pre(phi_cmd_state);
-        phi_cmd := phi_cmd_state;
-        err_yaw := 0.0;
-
-        tecs.enabled := false;
-        tecs.des_a := des_a;
-        tecs.des_gamma := des_gamma;
-        tecs.gamma_est := gamma_est;
-        tecs.vdot_est := vdot_est;
-
-        pitch_pid.enabled := false;
-        pitch_pid.error := err_pitch;
-        pitch_pid.derivativeInput := err_q;
-        pitch_pid.feedforward := ele_ff_phi;
-
-        heading_pid.enabled := false;
-        heading_pid.error := err_yaw;
-        heading_pid.derivativeInput := 0.0;
-        heading_pid.feedforward := 0.0;
-      else
-        // Desired speed, flight-path angle, and path heading.
-        des_v := vCruise;
-        // Clamp the glide-slope command and floor the denominator: near a
-        // waypoint horz_dist_err -> 0 made des_gamma blow up, commanding an
-        // aggressive climb/dive (altitude wallow). Bound to +/-15 deg.
-        des_gamma := min(max(K_h * position_error[3] / max(horz_dist_err, lookaheadMin),
-                             -0.12), 0.12);
-
-        des_heading := atan2(sin(lookahead_heading), cos(lookahead_heading));
-        des_a := K_V * (des_v - abs(v_est));
-
-        tecs.enabled := true;
-        tecs.des_a := des_a;
-        tecs.des_gamma := des_gamma;
-        tecs.gamma_est := gamma_est;
-        tecs.vdot_est := vdot_est;
-
-        // Pitch stick command, with pitch remapped nose-up-positive.
-        pitch_ned := -euler_est_rad[2];
-        err_pitch := atan2(sin(pre(tecs.pitchCommand) - pitch_ned),
-                           cos(pre(tecs.pitchCommand) - pitch_ned));
-        q_turn := sin(euler_est_rad[1]) * cos(pitch_ned)
-                  * tan(euler_est_rad[1]) * g / max(v_est, 1e-5);
-        err_q := atan2(sin(q_turn - euler_rate_est_rad_s[2]),
-                       cos(q_turn - euler_rate_est_rad_s[2]));
-        nz_excess := 1.0 / max(cos(euler_est_rad[1]), 1e-5) - 1.0;
-        ele_ff_phi := K_phi_elev * nz_excess;
-        throttle := min(max(pre(tecs.thrustCommand) / tecs.thrustMax, 0.0), 1.0);
-
-        // Heading to bank shaping.
-        chi := atan2(velocity_est_m_s[2], velocity_est_m_s[1]);
-        chi_err := -atan2(sin(des_heading - chi), cos(des_heading - chi));
-        if abs(chi_err) < chiDeadband then
-          chi_err := 0.0;
-        end if;
-        chi_dot_des := kChi * chi_err;
-        phi_des := min(max(atan2(max(v_est, 0.05) * chi_dot_des, g), -phiLim), phiLim);
-        dphi_max := phiDotLim * dt;
-        phi_des :=
-          min(max(phi_des - pre(phi_cmd_state), -dphi_max), dphi_max)
-          + pre(phi_cmd_state);
-        phi_cmd_state := min(max(phi_des, -phiLim), phiLim);
-        phi_cmd := phi_cmd_state;
-
-        // Lateral heading error PID to aileron stick.
-        err_yaw := atan2(sin(des_heading - euler_est_rad[3]),
-                         cos(des_heading - euler_est_rad[3]));
-        pitch_pid.enabled := true;
-        pitch_pid.error := err_pitch;
-        pitch_pid.derivativeInput := err_q;
-        pitch_pid.feedforward := ele_ff_phi;
-
-        heading_pid.enabled := true;
-        heading_pid.error := err_yaw;
-        heading_pid.derivativeInput := 0.0;
-        heading_pid.feedforward := 0.0;
-
-        elevator := pre(pitch_pid.command);
-        aileron := pre(heading_pid.command);
-        rudder := 0.0;
-
-        // Waypoint advance and circuit loop.
-        switch_threshold := waypointSwitchingDistance;
-        if along_track_err_w1 < switch_threshold then
-          current_wp := if current_wp >= nSegments then 1 else current_wp + 1;
-        end if;
-      end if;
-
-      stabilizer := stabilizerCmd;
-
-      // History for next sample's finite differences.
-      prev_position_m := position_m;
-      prev_euler_rad := euler_rad;
-      prev_speed := v_est;
-    end when;
+    currentWaypoint := guidance.currentWaypoint;
+    desiredSpeed := guidance.setpoints.speed;
+    desiredFlightPathAngle := guidance.setpoints.flightPathAngle;
+    desiredHeading := guidance.setpoints.heading;
+    desiredAcceleration := guidance.setpoints.acceleration;
+    positionEstimate_m := estimator.estimate.position_m;
+    eulerEstimate_rad := estimator.estimate.euler_rad;
+    velocityEstimate_m_s := estimator.estimate.velocity_m_s;
+    speedEstimate := estimator.estimate.speed;
+    flightPathAngleEstimate := estimator.estimate.flightPathAngle;
+    speedChangeEstimate := estimator.estimate.speedChange;
+    eulerRateEstimate_rad_s := estimator.estimate.eulerRate_rad_s;
+  end when;
 end FixedWingOuterLoop;

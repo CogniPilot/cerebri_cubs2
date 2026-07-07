@@ -115,10 +115,10 @@ static void fixed_wing_map_output(const FixedWingOuterLoopState *model,
 		.ch2 = csyn_pwm_from_throttle_axis((float)model->throttle),
 		.ch3 = csyn_pwm_from_centered_axis((float)model->rudder),
 		.ch4 = (int32_t)csyn_clampf((float)model->stabilizer, 1000.0f, 2000.0f),
-		.ch5 = (int32_t)model->current_wp,
-		.ch6 = (int32_t)(1000.0f * (float)model->des_v),
-		.ch7 = (int32_t)(1000.0f * (float)model->phi_cmd),
-		.ch8 = (int32_t)(1000.0f * (float)model->chi_err),
+		.ch5 = (int32_t)model->currentWaypoint,
+		.ch6 = (int32_t)(1000.0f * (float)model->desiredSpeed),
+		.ch7 = (int32_t)(1000.0f * (float)model->rollCommand),
+		.ch8 = (int32_t)(1000.0f * (float)model->courseError),
 	};
 }
 
@@ -205,9 +205,9 @@ static void update_telemetry(struct control_context *ctx, bool auto_mode)
 	ctx->attitude_estimate = (synapse_topic_AttitudeEstimateData_t){
 		.timestamp_us = now_us,
 		.angular_velocity_flu_rad_s = {
-			.roll = (float)g_model.euler_rate_est_rad_s[0],
-			.pitch = (float)g_model.euler_rate_est_rad_s[1],
-			.yaw = (float)g_model.euler_rate_est_rad_s[2],
+			.roll = (float)g_model.eulerRateEstimate_rad_s[0],
+			.pitch = (float)g_model.eulerRateEstimate_rad_s[1],
+			.yaw = (float)g_model.eulerRateEstimate_rad_s[2],
 		},
 	};
 	csyn_quatf_from_euler((float)g_model.euler_rad[0], (float)g_model.euler_rad[1],
@@ -217,7 +217,7 @@ static void update_telemetry(struct control_context *ctx, bool auto_mode)
 		.timestamp_us = now_us,
 		.thrust = csyn_clampf((float)g_model.throttle, 0.0f, 1.0f),
 	};
-	csyn_quatf_from_euler((float)g_model.phi_cmd, 0.0f, (float)g_model.des_heading,
+	csyn_quatf_from_euler((float)g_model.rollCommand, 0.0f, (float)g_model.desiredHeading,
 			      &ctx->attitude_command.attitude);
 
 	ctx->control_loop_metrics = (synapse_topic_ControlLoopMetricsData_t){

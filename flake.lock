@@ -101,17 +101,17 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1783403269,
-        "narHash": "sha256-VXYlP3MIsxeuoAahxWsS/RtptPtIaYYBLLPE0idQO9w=",
+        "lastModified": 1783407295,
+        "narHash": "sha256-gWuP8dGvnEWuJ/0gDEDv9VDW7NsFune1CXut0Mh5DA8=",
         "owner": "CogniPilot",
         "repo": "rumoca",
-        "rev": "d5b12684b5454340bae846db3b15f75e1d041c7a",
+        "rev": "36503311c7622b65fdf94971e7547341b7f00b2e",
         "type": "github"
       },
       "original": {
         "owner": "CogniPilot",
         "repo": "rumoca",
-        "rev": "d5b12684b5454340bae846db3b15f75e1d041c7a",
+        "rev": "36503311c7622b65fdf94971e7547341b7f00b2e",
         "type": "github"
       }
     },

@@ -3,7 +3,7 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    rumoca.url = "github:CogniPilot/rumoca/d5b12684b5454340bae846db3b15f75e1d041c7a";
+    rumoca.url = "github:CogniPilot/rumoca/36503311c7622b65fdf94971e7547341b7f00b2e";
   };
 
   outputs =
@@ -16,6 +16,11 @@
       ];
       forAllSystems = lib.genAttrs supportedSystems;
       pkgsFor = system: import nixpkgs { inherit system; };
+      appDirectory = "cerebri_cubs2";
+      appDisplayName = "CUBS2";
+      appCacheName = "cerebri-cubs2";
+      defaultBoard = "mr_vmu_tropic";
+      defaultNativeSimBoard = "native_sim";
       mkPythonEnv =
         pkgs:
         pkgs.python3.withPackages (
@@ -43,7 +48,8 @@
           pkgs = pkgsFor system;
           pythonEnv = mkPythonEnv pkgs;
           hostCc = if system == "x86_64-linux" then pkgs.gcc_multi else pkgs.stdenv.cc;
-          rumocaExecutable = "${rumoca.packages.${system}.rumoca}/bin/rumoca";
+          rumocaPackage = rumoca.packages.${system}.rumoca;
+          rumocaExecutable = "${rumocaPackage}/bin/rumoca";
           hostMultilibTools = lib.optionals (system == "x86_64-linux") [
             pkgs.glibc_multi.dev
           ];
@@ -70,6 +76,7 @@
             pkgs.picocom
             pkgs.pkg-config
             pkgs.python3Packages.pyocd
+            rumocaPackage
             hostCc
             pkgs.unzip
             pkgs.which
@@ -79,7 +86,7 @@
           ] ++ hostMultilibTools;
 
           commonScript = ''
-            cubs2_find_app() {
+            zephyr_app_find_app() {
               local dir
               dir="$(pwd -P)"
 
@@ -89,29 +96,29 @@
                   return 0
                 fi
 
-                if [ -f "$dir/cerebri_cubs2/west.yml" ] && [ -f "$dir/cerebri_cubs2/prj.conf" ]; then
-                  printf '%s\n' "$dir/cerebri_cubs2"
+                if [ -f "$dir/${appDirectory}/west.yml" ] && [ -f "$dir/${appDirectory}/prj.conf" ]; then
+                  printf '%s\n' "$dir/${appDirectory}"
                   return 0
                 fi
 
                 dir="$(dirname "$dir")"
               done
 
-              printf 'error: could not find the cerebri_cubs2 app from %s\n' "$(pwd -P)" >&2
+              printf 'error: could not find the ${appDirectory} app from %s\n' "$(pwd -P)" >&2
               printf 'run this command from the app directory or its west workspace root\n' >&2
               return 1
             }
 
-            cubs2_source_workspace() {
+            zephyr_app_source_workspace() {
               dirname "$1"
             }
 
-            cubs2_active_manifest() {
+            zephyr_app_active_manifest() {
               local dir="$1"
               (cd "$dir" && env -u ZEPHYR_BASE -u WEST_TOPDIR west manifest --path 2>/dev/null || true)
             }
 
-            cubs2_managed_workspace() {
+            zephyr_app_managed_workspace() {
               local app="$1"
               local cache_root
               local key
@@ -121,12 +128,12 @@
                 return 0
               fi
 
-              cache_root="''${XDG_CACHE_HOME:-$HOME/.cache}/cerebri-cubs2"
+              cache_root="''${XDG_CACHE_HOME:-$HOME/.cache}/${appCacheName}"
               key="$(printf '%s' "$app" | sha256sum | cut -c1-16)"
               printf '%s\n' "$cache_root/west-$key"
             }
 
-            cubs2_workspace() {
+            zephyr_app_workspace() {
               local app="$1"
               local source_workspace
               local expected_manifest
@@ -137,9 +144,9 @@
                 return 0
               fi
 
-              source_workspace="$(cubs2_source_workspace "$app")"
+              source_workspace="$(zephyr_app_source_workspace "$app")"
               expected_manifest="$(realpath "$app/west.yml")"
-              actual_manifest="$(cubs2_active_manifest "$app")"
+              actual_manifest="$(zephyr_app_active_manifest "$app")"
 
               if [ -n "$actual_manifest" ]; then
                 actual_manifest="$(realpath "$actual_manifest")"
@@ -150,11 +157,11 @@
                  [ "''${CUBS2_ALLOW_FOREIGN_WEST:-0}" = "1" ]; then
                 printf '%s\n' "$source_workspace"
               else
-                cubs2_managed_workspace "$app"
+                zephyr_app_managed_workspace "$app"
               fi
             }
 
-            cubs2_prepare_managed_workspace() {
+            zephyr_app_prepare_managed_workspace() {
               local app="$1"
               local workspace="$2"
               local manifest_dir="$workspace/manifest"
@@ -182,7 +189,7 @@
                 (cd "$workspace" && env -u ZEPHYR_BASE -u WEST_TOPDIR west init -l manifest)
               fi
 
-              actual_manifest="$(cubs2_active_manifest "$workspace")"
+              actual_manifest="$(zephyr_app_active_manifest "$workspace")"
               if [ -z "$actual_manifest" ]; then
                 printf 'error: could not read the managed west manifest in %s\n' "$workspace" >&2
                 return 1
@@ -195,7 +202,7 @@
               fi
             }
 
-            cubs2_require_module_paths() {
+            zephyr_app_require_module_paths() {
               local workspace="$1"
               local missing=0
               local path
@@ -222,10 +229,10 @@
               fi
             }
 
-            cubs2_export_common() {
+            zephyr_app_export_common() {
               local app="$1"
               local workspace
-              workspace="$(cubs2_workspace "$app")"
+              workspace="$(zephyr_app_workspace "$app")"
 
               export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
               export GNUARMEMB_TOOLCHAIN_PATH="''${GNUARMEMB_TOOLCHAIN_PATH:-${pkgs.gcc-arm-embedded}}"
@@ -236,14 +243,14 @@
               fi
             }
 
-            cubs2_require_workspace() {
+            zephyr_app_require_workspace() {
               local app="$1"
               local workspace
               local source_workspace
               local expected_manifest
               local actual_manifest
-              workspace="$(cubs2_workspace "$app")"
-              source_workspace="$(cubs2_source_workspace "$app")"
+              workspace="$(zephyr_app_workspace "$app")"
+              source_workspace="$(zephyr_app_source_workspace "$app")"
               expected_manifest="$(realpath "$app/west.yml")"
 
               if [ ! -d "$workspace/.west" ]; then
@@ -252,7 +259,7 @@
                 return 1
               fi
 
-              actual_manifest="$(cubs2_active_manifest "$workspace")"
+              actual_manifest="$(zephyr_app_active_manifest "$workspace")"
               if [ -z "$actual_manifest" ]; then
                 printf 'error: could not read the active west manifest in %s\n' "$workspace" >&2
                 return 1
@@ -263,8 +270,8 @@
                  [ "$actual_manifest" != "$expected_manifest" ] &&
                  [ "''${CUBS2_ALLOW_FOREIGN_WEST:-0}" != "1" ]; then
                 printf 'error: active west manifest is %s\n' "$actual_manifest" >&2
-                printf '       cerebri_cubs2 expects %s\n' "$expected_manifest" >&2
-                printf 'run nix run .#west-update to create/update the managed cerebri_cubs2 workspace\n' >&2
+                printf '       ${appDirectory} expects %s\n' "$expected_manifest" >&2
+                printf 'run nix run .#west-update to create/update the managed ${appDisplayName} workspace\n' >&2
                 return 1
               fi
 
@@ -274,7 +281,7 @@
                 return 1
               fi
 
-              cubs2_require_module_paths "$workspace"
+              zephyr_app_require_module_paths "$workspace"
             }
           '';
 
@@ -293,15 +300,15 @@
           cubs2-build = mkWestApp "cubs2-build" ''
             ${commonScript}
 
-            app="$(cubs2_find_app)"
-            cubs2_export_common "$app"
-            cubs2_require_workspace "$app"
+            app="$(zephyr_app_find_app)"
+            zephyr_app_export_common "$app"
+            zephyr_app_require_workspace "$app"
             workspace="$CUBS2_WORKSPACE_ROOT"
 
             ${rumocaScript}
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
 
-            board="''${CUBS2_BOARD:-mr_vmu_tropic}"
+            board="''${CUBS2_BOARD:-${defaultBoard}}"
             board_slug="''${board//\//_}"
             build_dir="''${CUBS2_BUILD_DIR:-$app/build-$board_slug}"
 
@@ -312,16 +319,16 @@
           cubs2-build-native-sim = mkWestApp "cubs2-build-native-sim" ''
             ${commonScript}
 
-            app="$(cubs2_find_app)"
-            cubs2_export_common "$app"
-            cubs2_require_workspace "$app"
+            app="$(zephyr_app_find_app)"
+            zephyr_app_export_common "$app"
+            zephyr_app_require_workspace "$app"
             workspace="$CUBS2_WORKSPACE_ROOT"
 
             ${rumocaScript}
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-host}"
 
-            board="''${CUBS2_NATIVE_SIM_BOARD:-native_sim}"
-            build_dir="''${CUBS2_NATIVE_SIM_BUILD_DIR:-$app/build-native_sim}"
+            board="''${CUBS2_NATIVE_SIM_BOARD:-${defaultNativeSimBoard}}"
+            build_dir="''${CUBS2_NATIVE_SIM_BUILD_DIR:-$app/build-${defaultNativeSimBoard}}"
 
             cd "$workspace"
             exec west build -b "$board" -d "$build_dir" "$app" "$@"
@@ -330,14 +337,14 @@
           cubs2-flash = mkWestApp "cubs2-flash" ''
             ${commonScript}
 
-            app="$(cubs2_find_app)"
-            cubs2_export_common "$app"
-            cubs2_require_workspace "$app"
+            app="$(zephyr_app_find_app)"
+            zephyr_app_export_common "$app"
+            zephyr_app_require_workspace "$app"
             workspace="$CUBS2_WORKSPACE_ROOT"
 
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
 
-            board="''${CUBS2_BOARD:-mr_vmu_tropic}"
+            board="''${CUBS2_BOARD:-${defaultBoard}}"
             board_slug="''${board//\//_}"
             build_dir="''${CUBS2_BUILD_DIR:-$app/build-$board_slug}"
             runner="''${CUBS2_FLASH_RUNNER:-pyocd}"
@@ -354,15 +361,15 @@
           cubs2-menuconfig = mkWestApp "cubs2-menuconfig" ''
             ${commonScript}
 
-            app="$(cubs2_find_app)"
-            cubs2_export_common "$app"
-            cubs2_require_workspace "$app"
+            app="$(zephyr_app_find_app)"
+            zephyr_app_export_common "$app"
+            zephyr_app_require_workspace "$app"
             workspace="$CUBS2_WORKSPACE_ROOT"
 
             ${rumocaScript}
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
 
-            board="''${CUBS2_BOARD:-mr_vmu_tropic}"
+            board="''${CUBS2_BOARD:-${defaultBoard}}"
             board_slug="''${board//\//_}"
             build_dir="''${CUBS2_BUILD_DIR:-$app/build-$board_slug}"
 
@@ -373,14 +380,14 @@
           cubs2-west-update = mkWestApp "cubs2-west-update" ''
             ${commonScript}
 
-            app="$(cubs2_find_app)"
-            workspace="$(cubs2_workspace "$app")"
-            source_workspace="$(cubs2_source_workspace "$app")"
+            app="$(zephyr_app_find_app)"
+            workspace="$(zephyr_app_workspace "$app")"
+            source_workspace="$(zephyr_app_source_workspace "$app")"
             expected_manifest="$(realpath "$app/west.yml")"
 
             if [ "$workspace" != "$source_workspace" ]; then
-              printf 'using managed cerebri_cubs2 west workspace: %s\n' "$workspace" >&2
-              cubs2_prepare_managed_workspace "$app" "$workspace"
+              printf 'using managed ${appDisplayName} west workspace: %s\n' "$workspace" >&2
+              zephyr_app_prepare_managed_workspace "$app" "$workspace"
               cd "$workspace"
               exec env -u ZEPHYR_BASE -u WEST_TOPDIR west update "$@"
             fi
@@ -389,7 +396,7 @@
               cd "$source_workspace"
               env -u ZEPHYR_BASE -u WEST_TOPDIR west init -l "$app"
             else
-              actual_manifest="$(cubs2_active_manifest "$source_workspace")"
+              actual_manifest="$(zephyr_app_active_manifest "$source_workspace")"
               if [ -z "$actual_manifest" ]; then
                 printf 'error: could not read the active west manifest in %s\n' "$source_workspace" >&2
                 exit 1
@@ -407,6 +414,24 @@
             exec env -u ZEPHYR_BASE -u WEST_TOPDIR west update "$@"
           '';
 
+          rumoca-check = pkgs.writeShellApplication {
+            name = "rumoca-check";
+            runtimeInputs = [
+              pkgs.coreutils
+            ];
+            text = ''
+              model="''${1:-src/FixedWingOuterLoop.mo}"
+
+              if [ ! -f "$model" ]; then
+                printf 'error: Modelica file not found: %s\n' "$model" >&2
+                exit 1
+              fi
+
+              "${rumocaExecutable}" fmt --check "$model"
+              "${rumocaExecutable}" lint "$model"
+            '';
+          };
+
           host-tools = pkgs.buildEnv {
             name = "cerebri-cubs2-host-tools";
             paths = baseTools ++ [
@@ -415,6 +440,7 @@
               cubs2-flash
               cubs2-menuconfig
               cubs2-west-update
+              rumoca-check
             ];
           };
         in
@@ -426,6 +452,7 @@
             cubs2-flash
             cubs2-menuconfig
             cubs2-west-update
+            rumoca-check
             ;
 
           default = host-tools;
@@ -441,31 +468,37 @@
           build = {
             type = "app";
             program = "${packages.cubs2-build}/bin/cubs2-build";
-            meta.description = "Build CUBS2 firmware for mr_vmu_tropic";
+            meta.description = "Build ${appDisplayName} firmware for ${defaultBoard}";
           };
 
           build-native-sim = {
             type = "app";
             program = "${packages.cubs2-build-native-sim}/bin/cubs2-build-native-sim";
-            meta.description = "Build CUBS2 for native_sim";
+            meta.description = "Build ${appDisplayName} for ${defaultNativeSimBoard}";
           };
 
           flash = {
             type = "app";
             program = "${packages.cubs2-flash}/bin/cubs2-flash";
-            meta.description = "Flash the CUBS2 firmware build";
+            meta.description = "Flash the ${appDisplayName} firmware build";
           };
 
           menuconfig = {
             type = "app";
             program = "${packages.cubs2-menuconfig}/bin/cubs2-menuconfig";
-            meta.description = "Run Zephyr menuconfig for CUBS2";
+            meta.description = "Run Zephyr menuconfig for ${appDisplayName}";
           };
 
           west-update = {
             type = "app";
             program = "${packages.cubs2-west-update}/bin/cubs2-west-update";
-            meta.description = "Initialize or update the CUBS2 west workspace";
+            meta.description = "Initialize or update the ${appDisplayName} west workspace";
+          };
+
+          rumoca-check = {
+            type = "app";
+            program = "${packages.rumoca-check}/bin/rumoca-check";
+            meta.description = "Run Rumoca formatting and lint checks";
           };
         }
       );
@@ -493,7 +526,7 @@
               export CUBS2_RUMOCA_EXECUTABLE="''${CUBS2_RUMOCA_EXECUTABLE:-${rumocaExecutable}}"
               export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
 
-              cubs2_shell_find_app() {
+              zephyr_app_shell_find_app() {
                 local dir
                 dir="$(pwd -P)"
 
@@ -503,8 +536,8 @@
                     return 0
                   fi
 
-                  if [ -f "$dir/cerebri_cubs2/west.yml" ] && [ -f "$dir/cerebri_cubs2/prj.conf" ]; then
-                    printf '%s\n' "$dir/cerebri_cubs2"
+                  if [ -f "$dir/${appDirectory}/west.yml" ] && [ -f "$dir/${appDirectory}/prj.conf" ]; then
+                    printf '%s\n' "$dir/${appDirectory}"
                     return 0
                   fi
 
@@ -514,7 +547,7 @@
                 return 1
               }
 
-              if app="$(cubs2_shell_find_app 2>/dev/null)"; then
+              if app="$(zephyr_app_shell_find_app 2>/dev/null)"; then
                 source_workspace="$(dirname "$app")"
                 expected_manifest="$(realpath "$app/west.yml")"
                 actual_manifest="$(env -u ZEPHYR_BASE -u WEST_TOPDIR west manifest --path 2>/dev/null || true)"
@@ -533,20 +566,20 @@
                   workspace="$(realpath -m "$CUBS2_WEST_WORKSPACE")"
                 else
                   key="$(printf '%s' "$app" | sha256sum | cut -c1-16)"
-                  workspace="''${XDG_CACHE_HOME:-$HOME/.cache}/cerebri-cubs2/west-$key"
+                  workspace="''${XDG_CACHE_HOME:-$HOME/.cache}/${appCacheName}/west-$key"
                 fi
 
                 export CUBS2_WORKSPACE_ROOT="$workspace"
                 if [ -d "$workspace/zephyr" ]; then
                   export ZEPHYR_BASE="$workspace/zephyr"
                 elif [ -z "''${ZEPHYR_BASE:-}" ]; then
-                  printf 'cerebri_cubs2 Nix shell: run cubs2-west-update before raw west builds\n' >&2
+                  printf '${appDisplayName} Nix shell: run cubs2-west-update before raw west builds\n' >&2
                 fi
               elif [ -z "''${ZEPHYR_BASE:-}" ] && [ -d "$PWD/zephyr" ]; then
                 export ZEPHYR_BASE="$PWD/zephyr"
               fi
 
-              echo "cerebri_cubs2 Nix shell: cubs2-west-update, cubs2-build, cubs2-build-native-sim, cubs2-flash"
+              echo "${appDisplayName} Nix shell: cubs2-west-update, cubs2-build, cubs2-build-native-sim, cubs2-flash"
             '';
           };
         }

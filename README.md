@@ -51,7 +51,7 @@ payloads.
 
 The current Modelica source requires Rumoca GALEC fixes after `v0.9.11`.
 The Nix build apps use a Rumoca compiler pinned to commit
-`d5b12684b5454340bae846db3b15f75e1d041c7a`. For non-Nix builds, point CMake at
+`36503311c7622b65fdf94971e7547341b7f00b2e`. For non-Nix builds, point CMake at
 a Rumoca compiler from that commit or newer:
 
 ```sh

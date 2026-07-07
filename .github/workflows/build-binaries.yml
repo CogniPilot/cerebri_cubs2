@@ -15,8 +15,30 @@ permissions:
   contents: read
 
 jobs:
+  modelica:
+    name: Rumoca fmt/lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          path: cerebri_cubs2
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Check Modelica
+        working-directory: cerebri_cubs2
+        run: nix run .#rumoca-check
+
   build:
     name: Build ${{ matrix.target.name }}
+    needs: modelica
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
