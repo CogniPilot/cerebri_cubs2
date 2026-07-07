@@ -71,22 +71,6 @@
         "type": "github"
       }
     },
-    "nixpkgs_2": {
-      "locked": {
-        "lastModified": 1782847189,
-        "narHash": "sha256-twXPFqFsrrY5r28Zh7Homgcp2gUMBgQ6WDS98Q/3xFI=",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "b6018f87da91d19d0ab4cf979885689b469cdd41",
-        "type": "github"
-      },
-      "original": {
-        "owner": "NixOS",
-        "ref": "nixos-25.11",
-        "repo": "nixpkgs",
-        "type": "github"
-      }
-    },
     "root": {
       "inputs": {
         "nixpkgs": "nixpkgs",
@@ -98,20 +82,22 @@
         "crane": "crane",
         "fenix": "fenix",
         "flake-utils": "flake-utils",
-        "nixpkgs": "nixpkgs_2"
+        "nixpkgs": [
+          "nixpkgs"
+        ]
       },
       "locked": {
-        "lastModified": 1783418236,
-        "narHash": "sha256-aNY1szFTzmDE8orQPYxSK2d7pciX97oRh123a3TGnDw=",
+        "lastModified": 1783437393,
+        "narHash": "sha256-y6EvMTBHztvRHi+PFTEvBwgWsuyXRY13UJ1wVoTv0Pc=",
         "owner": "CogniPilot",
         "repo": "rumoca",
-        "rev": "1ca331675573f8a6d5471f9bc2f873f7d6d0e5f8",
+        "rev": "3ba21755bf02e97f8db0690099a5db7ba621b1db",
         "type": "github"
       },
       "original": {
         "owner": "CogniPilot",
         "repo": "rumoca",
-        "rev": "1ca331675573f8a6d5471f9bc2f873f7d6d0e5f8",
+        "rev": "3ba21755bf02e97f8db0690099a5db7ba621b1db",
         "type": "github"
       }
     },
