@@ -1,4 +1,4 @@
-# CUBS2
+# Cerebri CubS2
 
 [![CI](https://github.com/CogniPilot/cerebri_cubs2/actions/workflows/ci.yml/badge.svg)](https://github.com/CogniPilot/cerebri_cubs2/actions/workflows/ci.yml)
 
