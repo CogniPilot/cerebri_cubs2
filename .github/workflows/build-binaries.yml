@@ -16,7 +16,6 @@ permissions:
 
 env:
   NIX_FLAGS: --quiet --option warn-dirty false
-  CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
   CUBS2_QUIET_LOGS: "1"
   CUBS2_LOG_TAIL_LINES: "200"
 
@@ -33,22 +32,27 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: nixbuild/nix-quick-install-action@v35
         with:
-          extra-conf: |
+          nix_conf: |
             experimental-features = nix-command flakes
+            accept-flake-config = true
+            keep-env-derivations = true
+            keep-outputs = true
 
-      - name: Use Rumoca binary cache
-        uses: cachix/cachix-action@v17
+      - name: Restore/save Nix store
+        uses: nix-community/cache-nix-action@v7
         with:
-          name: rumoca
-
-      - name: Use CUBS2 binary cache
-        if: env.CACHIX_AUTH_TOKEN != ''
-        uses: cachix/cachix-action@v17
-        with:
-          name: cerebri-cubs2
-          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          primary-key: nix-${{ runner.os }}-modelica-${{ hashFiles('cerebri_cubs2/flake.nix', 'cerebri_cubs2/flake.lock') }}
+          restore-prefixes-first-match: |
+            nix-${{ runner.os }}-modelica-
+            nix-${{ runner.os }}-
+          gc-max-store-size-linux: 4G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-last-accessed: P7D
+          purge-primary-key: never
 
       - name: Check Modelica
         working-directory: cerebri_cubs2
@@ -86,22 +90,28 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: nixbuild/nix-quick-install-action@v35
         with:
-          extra-conf: |
+          nix_conf: |
             experimental-features = nix-command flakes
+            accept-flake-config = true
+            keep-env-derivations = true
+            keep-outputs = true
 
-      - name: Use Rumoca binary cache
-        uses: cachix/cachix-action@v17
+      - name: Restore/save Nix store
+        uses: nix-community/cache-nix-action@v7
         with:
-          name: rumoca
-
-      - name: Use CUBS2 binary cache
-        if: env.CACHIX_AUTH_TOKEN != ''
-        uses: cachix/cachix-action@v17
-        with:
-          name: cerebri-cubs2
-          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          primary-key: nix-${{ runner.os }}-build-${{ matrix.target.name }}-${{ hashFiles('cerebri_cubs2/flake.nix', 'cerebri_cubs2/flake.lock') }}
+          restore-prefixes-first-match: |
+            nix-${{ runner.os }}-build-${{ matrix.target.name }}-
+            nix-${{ runner.os }}-build-
+            nix-${{ runner.os }}-
+          gc-max-store-size-linux: 4G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-last-accessed: P7D
+          purge-primary-key: never
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
@@ -151,22 +161,27 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: nixbuild/nix-quick-install-action@v35
         with:
-          extra-conf: |
+          nix_conf: |
             experimental-features = nix-command flakes
+            accept-flake-config = true
+            keep-env-derivations = true
+            keep-outputs = true
 
-      - name: Use Rumoca binary cache
-        uses: cachix/cachix-action@v17
+      - name: Restore/save Nix store
+        uses: nix-community/cache-nix-action@v7
         with:
-          name: rumoca
-
-      - name: Use CUBS2 binary cache
-        if: env.CACHIX_AUTH_TOKEN != ''
-        uses: cachix/cachix-action@v17
-        with:
-          name: cerebri-cubs2
-          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          primary-key: nix-${{ runner.os }}-flight-sil-${{ hashFiles('cerebri_cubs2/flake.nix', 'cerebri_cubs2/flake.lock') }}
+          restore-prefixes-first-match: |
+            nix-${{ runner.os }}-flight-sil-
+            nix-${{ runner.os }}-
+          gc-max-store-size-linux: 4G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-last-accessed: P7D
+          purge-primary-key: never
 
       - name: Run staged flight SIL
         working-directory: cerebri_cubs2
@@ -215,22 +230,27 @@ jobs:
           persist-credentials: false
 
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@v22
+        uses: nixbuild/nix-quick-install-action@v35
         with:
-          extra-conf: |
+          nix_conf: |
             experimental-features = nix-command flakes
+            accept-flake-config = true
+            keep-env-derivations = true
+            keep-outputs = true
 
-      - name: Use Rumoca binary cache
-        uses: cachix/cachix-action@v17
+      - name: Restore/save Nix store
+        uses: nix-community/cache-nix-action@v7
         with:
-          name: rumoca
-
-      - name: Use CUBS2 binary cache
-        if: env.CACHIX_AUTH_TOKEN != ''
-        uses: cachix/cachix-action@v17
-        with:
-          name: cerebri-cubs2
-          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          primary-key: nix-${{ runner.os }}-native-sim-sil-${{ hashFiles('cerebri_cubs2/flake.nix', 'cerebri_cubs2/flake.lock') }}
+          restore-prefixes-first-match: |
+            nix-${{ runner.os }}-native-sim-sil-
+            nix-${{ runner.os }}-
+          gc-max-store-size-linux: 4G
+          purge: true
+          purge-prefixes: nix-${{ runner.os }}-
+          purge-created: 0
+          purge-last-accessed: P7D
+          purge-primary-key: never
 
       - name: Download native_sim executable
         uses: actions/download-artifact@v4
