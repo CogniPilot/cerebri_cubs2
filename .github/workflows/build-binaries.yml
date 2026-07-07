@@ -38,6 +38,11 @@ jobs:
           extra-conf: |
             experimental-features = nix-command flakes
 
+      - name: Use Rumoca binary cache
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
+
       - name: Cache Nix builds
         uses: DeterminateSystems/magic-nix-cache-action@v12
 
@@ -81,6 +86,11 @@ jobs:
         with:
           extra-conf: |
             experimental-features = nix-command flakes
+
+      - name: Use Rumoca binary cache
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
 
       - name: Cache Nix builds
         uses: DeterminateSystems/magic-nix-cache-action@v12
@@ -138,6 +148,11 @@ jobs:
           extra-conf: |
             experimental-features = nix-command flakes
 
+      - name: Use Rumoca binary cache
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
+
       - name: Cache Nix builds
         uses: DeterminateSystems/magic-nix-cache-action@v12
 
@@ -192,6 +207,11 @@ jobs:
         with:
           extra-conf: |
             experimental-features = nix-command flakes
+
+      - name: Use Rumoca binary cache
+        uses: cachix/cachix-action@v17
+        with:
+          name: rumoca
 
       - name: Cache Nix builds
         uses: DeterminateSystems/magic-nix-cache-action@v12
