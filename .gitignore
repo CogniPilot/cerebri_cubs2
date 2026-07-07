@@ -1,4 +1,6 @@
 dev/
+src/results/
+src/rumoca-scenario.*.toml
 build/
 build-native_sim/
 build-*/

@@ -13,12 +13,11 @@ The board is an Ethernet/Zenoh control node:
 - publish `vehicle_health`, `attitude_estimate`, `attitude_command`, and
   `control_loop_metrics` synapse topics for controller diagnostics
 
-The app itself (`src/`) is only the control loop plus thin handwritten eFMI
-wrappers. The fixed-wing controller equations live in
-`modelica/FixedWingOuterLoop.mo`; CMake installs the pinned Rumoca binary and
-generates the eFMU plus C production code under
-`${CMAKE_BINARY_DIR}/generated/rumoca`. Generated Rumoca artifacts are build
-outputs, not committed source.
+The app itself (`src/`) is the control loop and the single Modelica controller
+source. The fixed-wing controller equations live in `src/FixedWingOuterLoop.mo`;
+CMake generates the eFMU plus C production code under
+`${CMAKE_BINARY_DIR}/generated/rumoca`. Generated Rumoca artifacts are not
+committed source.
 
 Everything topic-related lives in the
 [csyn](https://github.com/CogniPilot/csyn) west module
@@ -48,8 +47,19 @@ and uses the generated C headers from that release, so the schema version is
 locked by csyn rather than per app. No local `flatc` install is required.
 Inbound `ManualControlData` is a fixed-layout struct payload, `MocapFrame`
 remains a FlatBuffer table, and all outbound topics are fixed-layout struct
-payloads. No local Rumoca install is required; the build downloads and verifies
-the pinned Rumoca `v0.9.11` binary before generating the controller eFMI.
+payloads.
+
+The current vectorized Modelica source requires Rumoca fixes from the local
+`fix/galec-vector-issues` branch until those fixes are released. Point CMake at
+that compiler before building:
+
+```sh
+export CUBS2_RUMOCA_EXECUTABLE=~/git/rumoca/target/debug/rumoca
+```
+
+After Rumoca is released with those fixes, update the pinned
+`CUBS2_RUMOCA_VERSION` in `CMakeLists.txt` and the build can return to
+downloading the verified release binary automatically.
 
 Use separate build directories when switching boards:
 

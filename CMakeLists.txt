@@ -25,7 +25,7 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(cubs2 LANGUAGES C)
 
 set(CUBS2_RUMOCA_VERSION "v0.9.11"
-  CACHE STRING "Pinned Rumoca version used for eFMI control code generation"
+  CACHE STRING "Pinned Rumoca version used when CUBS2_RUMOCA_EXECUTABLE is not set"
 )
 set(CUBS2_RUMOCA_INSTALL_SCRIPT_SHA256
   "ac15aa5ec90cb974387610fae7594d2704f2a3bd2e080cfe2517e896d30eb161"
@@ -35,26 +35,49 @@ set(CUBS2_RUMOCA_INSTALL_SCRIPT_URL
   "https://raw.githubusercontent.com/CogniPilot/rumoca/${CUBS2_RUMOCA_VERSION}/infra/install/install.sh"
   CACHE STRING "Pinned Rumoca binary install script URL"
 )
-set(CUBS2_RUMOCA_BIN_DIR
-  ${CMAKE_CURRENT_BINARY_DIR}/tools/rumoca/${CUBS2_RUMOCA_VERSION}
-)
-set(CUBS2_RUMOCA_EXECUTABLE ${CUBS2_RUMOCA_BIN_DIR}/rumoca)
-
-add_custom_command(
-  OUTPUT ${CUBS2_RUMOCA_EXECUTABLE}
-  COMMAND ${CMAKE_COMMAND}
-          -DCUBS2_RUMOCA_VERSION=${CUBS2_RUMOCA_VERSION}
-          -DCUBS2_RUMOCA_BIN_DIR=${CUBS2_RUMOCA_BIN_DIR}
-          -DCUBS2_RUMOCA_INSTALL_SCRIPT_URL=${CUBS2_RUMOCA_INSTALL_SCRIPT_URL}
-          -DCUBS2_RUMOCA_INSTALL_SCRIPT_SHA256=${CUBS2_RUMOCA_INSTALL_SCRIPT_SHA256}
-          -P ${CMAKE_CURRENT_LIST_DIR}/cmake/InstallRumoca.cmake
-  COMMENT "Installing pinned Rumoca ${CUBS2_RUMOCA_VERSION}"
-  VERBATIM
+set(CUBS2_RUMOCA_EXECUTABLE "" CACHE FILEPATH
+  "Optional path to a Rumoca executable; empty installs the pinned release"
 )
 
-add_custom_target(cubs2_rumoca_tool
-  DEPENDS ${CUBS2_RUMOCA_EXECUTABLE}
-)
+if(NOT CUBS2_RUMOCA_EXECUTABLE AND DEFINED ENV{CUBS2_RUMOCA_EXECUTABLE})
+  set(CUBS2_RUMOCA_EXECUTABLE "$ENV{CUBS2_RUMOCA_EXECUTABLE}")
+endif()
+
+if(CUBS2_RUMOCA_EXECUTABLE)
+  set(CUBS2_RUMOCA_DESCRIPTION "${CUBS2_RUMOCA_EXECUTABLE}")
+  add_custom_target(cubs2_rumoca_tool
+    DEPENDS ${CUBS2_RUMOCA_EXECUTABLE}
+  )
+else()
+  if(CUBS2_RUMOCA_VERSION STREQUAL "v0.9.11")
+    message(WARNING
+      "FixedWingOuterLoop currently requires unreleased Rumoca vector fixes; "
+      "set CUBS2_RUMOCA_EXECUTABLE until CUBS2_RUMOCA_VERSION is updated."
+    )
+  endif()
+
+  set(CUBS2_RUMOCA_DESCRIPTION "Rumoca ${CUBS2_RUMOCA_VERSION}")
+  set(CUBS2_RUMOCA_BIN_DIR
+    ${CMAKE_CURRENT_BINARY_DIR}/tools/rumoca/${CUBS2_RUMOCA_VERSION}
+  )
+  set(CUBS2_RUMOCA_EXECUTABLE ${CUBS2_RUMOCA_BIN_DIR}/rumoca)
+
+  add_custom_command(
+    OUTPUT ${CUBS2_RUMOCA_EXECUTABLE}
+    COMMAND ${CMAKE_COMMAND}
+            -DCUBS2_RUMOCA_VERSION=${CUBS2_RUMOCA_VERSION}
+            -DCUBS2_RUMOCA_BIN_DIR=${CUBS2_RUMOCA_BIN_DIR}
+            -DCUBS2_RUMOCA_INSTALL_SCRIPT_URL=${CUBS2_RUMOCA_INSTALL_SCRIPT_URL}
+            -DCUBS2_RUMOCA_INSTALL_SCRIPT_SHA256=${CUBS2_RUMOCA_INSTALL_SCRIPT_SHA256}
+            -P ${CMAKE_CURRENT_LIST_DIR}/cmake/InstallRumoca.cmake
+    COMMENT "Installing pinned Rumoca ${CUBS2_RUMOCA_VERSION}"
+    VERBATIM
+  )
+
+  add_custom_target(cubs2_rumoca_tool
+    DEPENDS ${CUBS2_RUMOCA_EXECUTABLE}
+  )
+endif()
 
 set(CUBS2_RUMOCA_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/rumoca)
 set(CUBS2_EFMI_CONTROL_STAMPS)
@@ -62,7 +85,7 @@ set(CUBS2_EFMI_CONTROL_SOURCES)
 set(CUBS2_EFMI_CONTROL_INCLUDE_DIRS)
 
 function(cubs2_add_efmi_control_model model_name)
-  set(_model_file ${CMAKE_CURRENT_SOURCE_DIR}/modelica/${model_name}.mo)
+  set(_model_file ${CMAKE_CURRENT_SOURCE_DIR}/src/${model_name}.mo)
   set(_efmu_dir ${CUBS2_RUMOCA_GENERATED_DIR}/${model_name})
   set(_efmu_file ${CUBS2_RUMOCA_GENERATED_DIR}/${model_name}.efmu)
   set(_stamp ${CUBS2_RUMOCA_GENERATED_DIR}/${model_name}.galec-production.stamp)
@@ -93,7 +116,7 @@ function(cubs2_add_efmi_control_model model_name)
     DEPENDS
       ${_model_file}
       ${CUBS2_RUMOCA_EXECUTABLE}
-    COMMENT "Generating ${model_name} eFMI Production Code with Rumoca ${CUBS2_RUMOCA_VERSION}"
+    COMMENT "Generating ${model_name} eFMI Production Code with ${CUBS2_RUMOCA_DESCRIPTION}"
     VERBATIM
   )
 

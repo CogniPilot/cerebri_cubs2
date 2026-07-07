@@ -5,7 +5,7 @@
 #include <csyn/csyn_codec.h>
 #include <csyn/csyn_zros.h>
 
-#include "cubs2_efmi_control.h"
+#include "FixedWingOuterLoop.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -19,6 +19,7 @@
 
 LOG_MODULE_REGISTER(cubs2, LOG_LEVEL_INF);
 
+#define CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS 20000000
 #define CUBS2_CONTROL_PERIOD_US (CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS / 1000U)
 
 struct control_context {
@@ -92,16 +93,17 @@ static void fixed_wing_map_input(FixedWingOuterLoopState *model,
 			.z = mocap->qz,
 		};
 
+		/* FixedWingOuterLoop consumes Euler [roll, pitch, yaw] in radians. */
 		csyn_euler_from_quatf(&quat, &roll, &pitch, &yaw);
 		pitch = -pitch;
 	}
 
-	model->x = mocap->x;
-	model->y = mocap->y;
-	model->z = mocap->z;
-	model->roll = roll;
-	model->pitch = pitch;
-	model->yaw = yaw;
+	model->position_m[0] = mocap->x;
+	model->position_m[1] = mocap->y;
+	model->position_m[2] = mocap->z;
+	model->euler_rad[0] = roll;
+	model->euler_rad[1] = pitch;
+	model->euler_rad[2] = yaw;
 }
 
 static void fixed_wing_map_output(const FixedWingOuterLoopState *model,
@@ -203,13 +205,13 @@ static void update_telemetry(struct control_context *ctx, bool auto_mode)
 	ctx->attitude_estimate = (synapse_topic_AttitudeEstimateData_t){
 		.timestamp_us = now_us,
 		.angular_velocity_flu_rad_s = {
-			.roll = (float)g_model.p_est,
-			.pitch = (float)g_model.q_est,
-			.yaw = (float)g_model.r_est,
+			.roll = (float)g_model.euler_rate_est_rad_s[0],
+			.pitch = (float)g_model.euler_rate_est_rad_s[1],
+			.yaw = (float)g_model.euler_rate_est_rad_s[2],
 		},
 	};
-	csyn_quatf_from_euler((float)g_model.roll, (float)g_model.pitch, (float)g_model.yaw,
-			      &ctx->attitude_estimate.attitude);
+	csyn_quatf_from_euler((float)g_model.euler_rad[0], (float)g_model.euler_rad[1],
+			      (float)g_model.euler_rad[2], &ctx->attitude_estimate.attitude);
 
 	ctx->attitude_command = (synapse_topic_AttitudeCommandData_t){
 		.timestamp_us = now_us,
@@ -243,7 +245,8 @@ int main(void)
 	int rc;
 
 	*ctx = (struct control_context){0};
-	cubs2_efmi_fixed_wing_outer_loop_init(&g_model);
+	EFMI_INIT(FixedWingOuterLoop, &g_model);
+	EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
 
 	rc = control_pubs_init();
 	if (rc != 0) {
@@ -262,14 +265,15 @@ int main(void)
 
 		auto_mode = auto_mode_selected(ctx);
 		if (auto_mode && !ctx->previous_auto_mode) {
-			cubs2_efmi_fixed_wing_outer_loop_init(&g_model);
+			EFMI_INIT(FixedWingOuterLoop, &g_model);
+			EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
 		}
 		ctx->previous_auto_mode = auto_mode;
 
 		if (auto_mode) {
 			if (ctx->mocap.valid) {
 				fixed_wing_map_input(&g_model, &ctx->mocap);
-				cubs2_efmi_fixed_wing_outer_loop_step(&g_model);
+				EFMI_STEP(FixedWingOuterLoop, &g_model);
 				fixed_wing_map_output(&g_model, &auto_rc);
 			} else {
 				idle_output(&auto_rc);
