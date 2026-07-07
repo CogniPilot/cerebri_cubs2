@@ -52,7 +52,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   modelica:
-    name: Rumoca fmt/lint
+    name: Nix Setup + Rumoca fmt/lint
     runs-on: ubuntu-latest
     concurrency:
       group: nix-cache-${{ github.workflow }}-${{ github.run_id }}
@@ -65,25 +65,13 @@ jobs:
           path: cerebri_cubs2
           persist-credentials: false
 
-      - name: Install Nix
+      - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
-        with:
-          determinate: false
-          trust-runner-user: true
-          extra-conf: |
-            experimental-features = nix-command flakes
-            accept-flake-config = true
-            keep-outputs = true
-            keep-derivations = true
 
       - name: Cache Nix builds
-        uses: DeterminateSystems/magic-nix-cache-action@v14
-        with:
-          use-gha-cache: enabled
-          use-flakehub: disabled
-          diagnostic-endpoint: ""
+        uses: DeterminateSystems/magic-nix-cache-action@v12
 
-      - name: Check Modelica
+      - name: Run Rumoca fmt/lint
         working-directory: cerebri_cubs2
         run: nix $NIX_FLAGS run .#rumoca-check
 
@@ -116,23 +104,11 @@ jobs:
           path: cerebri_cubs2
           persist-credentials: false
 
-      - name: Install Nix
+      - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
-        with:
-          determinate: false
-          trust-runner-user: true
-          extra-conf: |
-            experimental-features = nix-command flakes
-            accept-flake-config = true
-            keep-outputs = true
-            keep-derivations = true
 
       - name: Cache Nix builds
-        uses: DeterminateSystems/magic-nix-cache-action@v14
-        with:
-          use-gha-cache: enabled
-          use-flakehub: disabled
-          diagnostic-endpoint: ""
+        uses: DeterminateSystems/magic-nix-cache-action@v12
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
@@ -188,23 +164,11 @@ jobs:
           path: cerebri_cubs2
           persist-credentials: false
 
-      - name: Install Nix
+      - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
-        with:
-          determinate: false
-          trust-runner-user: true
-          extra-conf: |
-            experimental-features = nix-command flakes
-            accept-flake-config = true
-            keep-outputs = true
-            keep-derivations = true
 
       - name: Cache Nix builds
-        uses: DeterminateSystems/magic-nix-cache-action@v14
-        with:
-          use-gha-cache: enabled
-          use-flakehub: disabled
-          diagnostic-endpoint: ""
+        uses: DeterminateSystems/magic-nix-cache-action@v12
 
       - name: Run Modelica flight test
         working-directory: cerebri_cubs2
@@ -256,23 +220,11 @@ jobs:
           path: cerebri_cubs2
           persist-credentials: false
 
-      - name: Install Nix
+      - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
-        with:
-          determinate: false
-          trust-runner-user: true
-          extra-conf: |
-            experimental-features = nix-command flakes
-            accept-flake-config = true
-            keep-outputs = true
-            keep-derivations = true
 
       - name: Cache Nix builds
-        uses: DeterminateSystems/magic-nix-cache-action@v14
-        with:
-          use-gha-cache: enabled
-          use-flakehub: disabled
-          diagnostic-endpoint: ""
+        uses: DeterminateSystems/magic-nix-cache-action@v12
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
