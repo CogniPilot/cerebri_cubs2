@@ -321,6 +321,7 @@ jobs:
 
       - name: Create or update GitHub release
         env:
+          GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ needs.release_tag.outputs.tag }}
         run: |
@@ -330,4 +331,10 @@ jobs:
             gh release create "$tag" --title "$tag" --generate-notes
           fi
 
-          gh release upload "$tag" dist/* --clobber
+          mapfile -t files < <(find dist -type f | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            printf 'error: no release binaries found under dist\n' >&2
+            exit 1
+          fi
+
+          gh release upload "$tag" "${files[@]}" --clobber
