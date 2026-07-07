@@ -489,9 +489,8 @@
             name = "cubs2-native-sim-sil-test";
             runtimeInputs = [
               pkgs.coreutils
-              pkgs.zenoh
-              nativeSimSilPythonEnv
               cubs2-build-native-sim
+              cubs2-native-sim-sil-run
             ];
             text = ''
               ${commonScript}
@@ -501,6 +500,42 @@
               zephyr_app_require_workspace "$app"
               "${cubs2-build-native-sim}/bin/cubs2-build-native-sim"
 
+              cd "$app"
+              exec "${cubs2-native-sim-sil-run}/bin/cubs2-native-sim-sil-run" "$@"
+            '';
+          };
+
+          cubs2-native-sim-sil-run = pkgs.writeShellApplication {
+            name = "cubs2-native-sim-sil-run";
+            runtimeInputs = [
+              pkgs.coreutils
+              pkgs.zenoh
+              nativeSimSilPythonEnv
+            ];
+            text = ''
+              find_app() {
+                local dir
+                dir="$(pwd -P)"
+
+                while [ "$dir" != "/" ]; do
+                  if [ -f "$dir/west.yml" ] && [ -f "$dir/prj.conf" ] && [ -f "$dir/CMakeLists.txt" ]; then
+                    printf '%s\n' "$dir"
+                    return 0
+                  fi
+
+                  if [ -f "$dir/${appDirectory}/west.yml" ] && [ -f "$dir/${appDirectory}/prj.conf" ]; then
+                    printf '%s\n' "$dir/${appDirectory}"
+                    return 0
+                  fi
+
+                  dir="$(dirname "$dir")"
+                done
+
+                printf 'error: could not find the ${appDirectory} app from %s\n' "$(pwd -P)" >&2
+                return 1
+              }
+
+              app="$(find_app)"
               cd "$app"
               exec "${nativeSimSilPythonEnv}/bin/python" \
                 tests/zephyr/run_native_sim_zenoh_sil.py "$@"
@@ -518,6 +553,7 @@
               cubs2-west-update
               cubs2-flight-sil-test
               cubs2-native-sim-sil-test
+              cubs2-native-sim-sil-run
               rumoca-check
             ];
           };
@@ -533,6 +569,7 @@
             cubs2-west-update
             cubs2-flight-sil-test
             cubs2-native-sim-sil-test
+            cubs2-native-sim-sil-run
             rumoca-check
             ;
 
@@ -593,6 +630,12 @@
             type = "app";
             program = "${packages.cubs2-native-sim-sil-test}/bin/cubs2-native-sim-sil-test";
             meta.description = "Run CUBS2 Zephyr native_sim SIL through Zenoh topics";
+          };
+
+          native-sim-sil-run = {
+            type = "app";
+            program = "${packages.cubs2-native-sim-sil-run}/bin/cubs2-native-sim-sil-run";
+            meta.description = "Run CUBS2 Zephyr native_sim SIL against an existing native_sim executable";
           };
         }
       );
@@ -673,7 +716,7 @@
                 export ZEPHYR_BASE="$PWD/zephyr"
               fi
 
-              echo "${appDisplayName} Nix shell: cubs2-west-update, cubs2-build, cubs2-build-native-sim, cubs2-flight-sil-test, cubs2-native-sim-sil-test, cubs2-flash"
+              echo "${appDisplayName} Nix shell: cubs2-west-update, cubs2-build, cubs2-build-native-sim, cubs2-flight-sil-test, cubs2-native-sim-sil-test, cubs2-native-sim-sil-run, cubs2-flash"
             '';
           };
         }

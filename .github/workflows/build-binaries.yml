@@ -13,6 +13,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 env:
   NIX_FLAGS: --quiet --option warn-dirty false
@@ -36,6 +37,9 @@ jobs:
         with:
           extra-conf: |
             experimental-features = nix-command flakes
+
+      - name: Cache Nix builds
+        uses: DeterminateSystems/magic-nix-cache-action@v14
 
       - name: Check Modelica
         working-directory: cerebri_cubs2
@@ -77,6 +81,9 @@ jobs:
         with:
           extra-conf: |
             experimental-features = nix-command flakes
+
+      - name: Cache Nix builds
+        uses: DeterminateSystems/magic-nix-cache-action@v14
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
@@ -131,6 +138,9 @@ jobs:
           extra-conf: |
             experimental-features = nix-command flakes
 
+      - name: Cache Nix builds
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+
       - name: Run staged flight SIL
         working-directory: cerebri_cubs2
         run: nix $NIX_FLAGS run .#flight-sil-test
@@ -166,8 +176,9 @@ jobs:
   native-sim-sil:
     name: Zephyr native_sim Zenoh SIL
     needs:
-      - modelica
+      - build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -182,13 +193,21 @@ jobs:
           extra-conf: |
             experimental-features = nix-command flakes
 
-      - name: Update west workspace
-        working-directory: cerebri_cubs2
-        run: nix $NIX_FLAGS run .#west-update
+      - name: Cache Nix builds
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+
+      - name: Download native_sim executable
+        uses: actions/download-artifact@v4
+        with:
+          name: cerebri-cubs2-native_sim
+          path: cerebri_cubs2/dist/native_sim
 
       - name: Run native_sim Zenoh SIL
         working-directory: cerebri_cubs2
-        run: nix $NIX_FLAGS run .#native-sim-sil-test
+        run: |
+          chmod +x dist/native_sim/native_sim-zephyr.exe
+          nix $NIX_FLAGS run .#native-sim-sil-run -- \
+            --sim dist/native_sim/native_sim-zephyr.exe
 
       - name: Upload native_sim SIL artifacts
         id: upload-native-sim-artifacts
@@ -197,7 +216,6 @@ jobs:
         with:
           name: cerebri-cubs2-native-sim-zenoh-sil
           path: |
-            cerebri_cubs2/build-native_sim/west-build.log
             cerebri_cubs2/artifacts/native-sim-sil/*.csv
             cerebri_cubs2/artifacts/native-sim-sil/*.log
             cerebri_cubs2/artifacts/native-sim-sil/*.md
