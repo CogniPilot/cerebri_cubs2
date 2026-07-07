@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   NIX_FLAGS: --quiet --option warn-dirty false
@@ -42,9 +41,6 @@ jobs:
         uses: cachix/cachix-action@v17
         with:
           name: rumoca
-
-      - name: Cache Nix builds
-        uses: DeterminateSystems/magic-nix-cache-action@v12
 
       - name: Check Modelica
         working-directory: cerebri_cubs2
@@ -91,9 +87,6 @@ jobs:
         uses: cachix/cachix-action@v17
         with:
           name: rumoca
-
-      - name: Cache Nix builds
-        uses: DeterminateSystems/magic-nix-cache-action@v12
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
@@ -153,9 +146,6 @@ jobs:
         with:
           name: rumoca
 
-      - name: Cache Nix builds
-        uses: DeterminateSystems/magic-nix-cache-action@v12
-
       - name: Run staged flight SIL
         working-directory: cerebri_cubs2
         run: nix $NIX_FLAGS run .#flight-sil-test
@@ -212,9 +202,6 @@ jobs:
         uses: cachix/cachix-action@v17
         with:
           name: rumoca
-
-      - name: Cache Nix builds
-        uses: DeterminateSystems/magic-nix-cache-action@v12
 
       - name: Download native_sim executable
         uses: actions/download-artifact@v4
