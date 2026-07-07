@@ -20,6 +20,7 @@
       appCacheName = "cerebri-cubs2";
       defaultBoard = "mr_vmu_tropic";
       defaultNativeSimBoard = "native_sim";
+      defaultNativeSim64Board = "native_sim/native/64";
       rumocaVersion = "0.9.13";
       mkRumocaBinaryPackage =
         pkgs:
@@ -403,7 +404,27 @@
             export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-host}"
 
             board="''${CUBS2_NATIVE_SIM_BOARD:-${defaultNativeSimBoard}}"
-            build_dir="''${CUBS2_NATIVE_SIM_BUILD_DIR:-$app/build-${defaultNativeSimBoard}}"
+            board_slug="''${board//\//_}"
+            build_dir="''${CUBS2_NATIVE_SIM_BUILD_DIR:-$app/build-$board_slug}"
+
+            cd "$workspace"
+            zephyr_app_run_logged "$build_dir/west-build.log" \
+              west build -b "$board" -d "$build_dir" "$app" "$@"
+          '';
+
+          cubs2-build-native-sim-64 = mkWestApp "cubs2-build-native-sim-64" [ rumocaPackage ] ''
+            ${commonScript}
+
+            app="$(zephyr_app_find_app)"
+            zephyr_app_export_common "$app"
+            zephyr_app_require_workspace "$app"
+            workspace="$CUBS2_WORKSPACE_ROOT"
+
+            export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-host}"
+
+            board="''${CUBS2_NATIVE_SIM_64_BOARD:-${defaultNativeSim64Board}}"
+            board_slug="''${board//\//_}"
+            build_dir="''${CUBS2_NATIVE_SIM_64_BUILD_DIR:-$app/build-$board_slug}"
 
             cd "$workspace"
             zephyr_app_run_logged "$build_dir/west-build.log" \
@@ -540,9 +561,14 @@
               zephyr_app_export_common "$app"
               zephyr_app_require_workspace "$app"
               "${cubs2-build-native-sim}/bin/cubs2-build-native-sim"
+              board="''${CUBS2_NATIVE_SIM_BOARD:-${defaultNativeSimBoard}}"
+              board_slug="''${board//\//_}"
+              sim="''${CUBS2_NATIVE_SIM_BUILD_DIR:-$app/build-$board_slug}/zephyr/zephyr.exe"
 
               cd "$app"
-              exec "${cubs2-native-sim-sil-run}/bin/cubs2-native-sim-sil-run" "$@"
+              exec "${cubs2-native-sim-sil-run}/bin/cubs2-native-sim-sil-run" \
+                --sim "$sim" \
+                "$@"
             '';
           };
 
@@ -583,18 +609,64 @@
             '';
           };
 
+          cubs2-native-sim-64-sil-run = pkgs.writeShellApplication {
+            name = "cubs2-native-sim-64-sil-run";
+            runtimeInputs = [
+              pkgs.coreutils
+              cubs2-native-sim-sil-run
+            ];
+            text = ''
+              ${commonScript}
+
+              app="$(zephyr_app_find_app)"
+              board="''${CUBS2_NATIVE_SIM_64_BOARD:-${defaultNativeSim64Board}}"
+              board_slug="''${board//\//_}"
+              sim="''${CUBS2_NATIVE_SIM_64_BUILD_DIR:-$app/build-$board_slug}/zephyr/zephyr.exe"
+              artifacts="''${CUBS2_NATIVE_SIM_64_ARTIFACTS:-artifacts/native-sim-64-sil}"
+
+              cd "$app"
+              exec "${cubs2-native-sim-sil-run}/bin/cubs2-native-sim-sil-run" \
+                --sim "$sim" \
+                --artifacts "$artifacts" \
+                "$@"
+            '';
+          };
+
+          cubs2-native-sim-64-sil-test = pkgs.writeShellApplication {
+            name = "cubs2-native-sim-64-sil-test";
+            runtimeInputs = [
+              pkgs.coreutils
+              cubs2-build-native-sim-64
+              cubs2-native-sim-64-sil-run
+            ];
+            text = ''
+              ${commonScript}
+
+              app="$(zephyr_app_find_app)"
+              zephyr_app_export_common "$app"
+              zephyr_app_require_workspace "$app"
+              "${cubs2-build-native-sim-64}/bin/cubs2-build-native-sim-64"
+
+              cd "$app"
+              exec "${cubs2-native-sim-64-sil-run}/bin/cubs2-native-sim-64-sil-run" "$@"
+            '';
+          };
+
           host-tools = pkgs.buildEnv {
             name = "cerebri-cubs2-host-tools";
             paths = baseTools ++ [
               rumocaPackage
               cubs2-build
               cubs2-build-native-sim
+              cubs2-build-native-sim-64
               cubs2-flash
               cubs2-menuconfig
               cubs2-west-update
               cubs2-flight-sil-test
               cubs2-native-sim-sil-test
               cubs2-native-sim-sil-run
+              cubs2-native-sim-64-sil-test
+              cubs2-native-sim-64-sil-run
               rumoca-check
             ];
           };
@@ -605,12 +677,15 @@
             rumocaPackage
             cubs2-build
             cubs2-build-native-sim
+            cubs2-build-native-sim-64
             cubs2-flash
             cubs2-menuconfig
             cubs2-west-update
             cubs2-flight-sil-test
             cubs2-native-sim-sil-test
             cubs2-native-sim-sil-run
+            cubs2-native-sim-64-sil-test
+            cubs2-native-sim-64-sil-run
             rumoca-check
             ;
 
@@ -635,6 +710,12 @@
             type = "app";
             program = "${packages.cubs2-build-native-sim}/bin/cubs2-build-native-sim";
             meta.description = "Build ${appDisplayName} for ${defaultNativeSimBoard}";
+          };
+
+          build-native-sim-64 = {
+            type = "app";
+            program = "${packages.cubs2-build-native-sim-64}/bin/cubs2-build-native-sim-64";
+            meta.description = "Build ${appDisplayName} for ${defaultNativeSim64Board}";
           };
 
           flash = {
@@ -677,6 +758,18 @@
             type = "app";
             program = "${packages.cubs2-native-sim-sil-run}/bin/cubs2-native-sim-sil-run";
             meta.description = "Run CUBS2 Zephyr native_sim SIL against an existing native_sim executable";
+          };
+
+          native-sim-64-sil-test = {
+            type = "app";
+            program = "${packages.cubs2-native-sim-64-sil-test}/bin/cubs2-native-sim-64-sil-test";
+            meta.description = "Run CUBS2 Zephyr native_sim/native/64 SIL through Zenoh topics";
+          };
+
+          native-sim-64-sil-run = {
+            type = "app";
+            program = "${packages.cubs2-native-sim-64-sil-run}/bin/cubs2-native-sim-64-sil-run";
+            meta.description = "Run CUBS2 Zephyr native_sim/native/64 SIL against an existing executable";
           };
         }
       );
@@ -757,7 +850,7 @@
                 export ZEPHYR_BASE="$PWD/zephyr"
               fi
 
-              echo "${appDisplayName} Nix shell: cubs2-west-update, cubs2-build, cubs2-build-native-sim, cubs2-flight-sil-test, cubs2-native-sim-sil-test, cubs2-native-sim-sil-run, cubs2-flash"
+              echo "${appDisplayName} Nix shell: cubs2-west-update, cubs2-build, cubs2-build-native-sim, cubs2-build-native-sim-64, cubs2-flight-sil-test, cubs2-native-sim-sil-test, cubs2-native-sim-64-sil-test, cubs2-native-sim-sil-run, cubs2-native-sim-64-sil-run, cubs2-flash"
             '';
           };
         }

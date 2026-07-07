@@ -192,7 +192,9 @@ def write_csv(path: Path, rows: Iterable[dict[str, int | float]]) -> None:
         writer.writerows(rows)
 
 
-def write_summary(path: Path, locator: str, rows: list[dict[str, int | float]]) -> None:
+def write_summary(
+    path: Path, locator: str, sim: Path, rows: list[dict[str, int | float]]
+) -> None:
     max_speed_signal = max((int(row["output6_us"]) for row in rows), default=0)
     max_throttle = max((int(row["output2_us"]) for row in rows), default=0)
     max_bank_signal = max((abs(int(row["output7_us"])) for row in rows), default=0)
@@ -202,12 +204,13 @@ def write_summary(path: Path, locator: str, rows: list[dict[str, int | float]]) 
             "# Zephyr Native Sim Zenoh SIL",
             "",
             f"- Zenoh router locator: `{locator}`",
+            f"- native_sim executable: `{sim}`",
             f"- PWM samples received: `{len(rows)}`",
             f"- Max `output6_us` controller speed signal: `{max_speed_signal}`",
             f"- Max throttle PWM `output2_us`: `{max_throttle}`",
             f"- Max absolute roll-command signal `output7_us`: `{max_bank_signal}`",
             "",
-            "This test starts `zenohd`, runs `build-native_sim/zephyr/zephyr.exe`,",
+            f"This test starts `zenohd`, runs `{sim}`,",
             "publishes manual-control and mocap inputs on Synapse Zenoh topics,",
             "and verifies that the Zephyr app publishes non-idle PWM outputs.",
             "",
@@ -265,7 +268,7 @@ def main() -> int:
 
         drain_pwm(pwm_subscriber, rows)
         write_csv(csv_path, rows)
-        write_summary(summary_path, args.locator, rows)
+        write_summary(summary_path, args.locator, sim, rows)
 
         if not rows:
             raise RuntimeError(f"no PWM outputs received over {PWM_TOPIC}\n\n{tail(sim_log)}")

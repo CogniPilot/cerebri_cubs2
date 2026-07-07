@@ -31,7 +31,7 @@ if(CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064 AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
   zephyr_link_libraries(${LINKERFLAGPREFIX},--no-warn-rwx-segments)
 endif()
 
-if(TARGET native_simulator AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+if(TARGET native_simulator AND CMAKE_C_COMPILER_ID STREQUAL "GNU" AND NOT CONFIG_64BIT)
   # Nix's multilib GCC wrapper searches both 32-bit and 64-bit library paths
   # while native_sim links with -m32. Tell ld.bfd not to warn when skipping the
   # incompatible 64-bit candidates it encounters before the matching libraries.

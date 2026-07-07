@@ -69,6 +69,7 @@ Use separate build directories when switching boards:
 ```sh
 west build -b mr_vmu_tropic -d build-mr_vmu_tropic cerebri_cubs2
 west build -b native_sim -d build-native_sim cerebri_cubs2
+west build -b native_sim/native/64 -d build-native_sim_native_64 cerebri_cubs2
 ```
 
 ## Nix Environment
@@ -90,8 +91,8 @@ nix run .#west-update
 nix run .#build
 ```
 
-The flake also exposes `.#build-native-sim`, `.#flash`, `.#menuconfig`, and an
-inlined `nixosModules.default` for NixOS host setup.
+The flake also exposes `.#build-native-sim`, `.#build-native-sim-64`, `.#flash`,
+`.#menuconfig`, and an inlined `nixosModules.default` for NixOS host setup.
 
 To run the Zephyr `native_sim` app through Zenoh, use:
 
@@ -105,3 +106,10 @@ The native-sim SIL runner starts `zenohd` on `udp/127.0.0.1:7447`, launches
 and verifies PWM outputs on `synapse/v1/topic/pwm_signal_outputs`. A Zenoh
 ground station can connect to the same router while the native_sim executable
 is running.
+
+For the 64-bit native simulator target, use:
+
+```sh
+nix run .#build-native-sim-64
+nix run .#native-sim-64-sil-test
+```
