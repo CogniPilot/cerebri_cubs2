@@ -1,0 +1,112 @@
+source_roots = [
+  "../../models/vendor/CMM-v0.0.2",
+  "../../models/plant",
+]
+
+[rumoca]
+version = "1"
+task = "simulate"
+
+[model]
+file = "Cubs2NativeSimSIL.mo"
+name = "Cubs2NativeSimSIL"
+
+[sim]
+dt = 0.002
+mode = "lockstep"
+solver = "rk-like"
+t_end = 40.0
+output = "artifacts/native-sim-sil/native-sim-rumoca.html"
+
+[lockstep]
+send_rate_hz = 240.0
+receive_rate_hz = 50.0
+max_advance_dt = 0.002
+
+[input]
+mode = "auto"
+
+[transport.zenoh]
+mode = "client"
+endpoint = "udp/127.0.0.1:7447"
+
+[publish]
+send = "cubs2/sil/mocap_sample"
+
+[subscribe]
+receive = "cubs2/sil/pwm_outputs"
+
+[schema]
+bfbs = ["artifacts/native-sim-sil/native_sil_io.bfbs"]
+
+[send]
+root_type = "cubs2.sil.MocapSample"
+
+[send.route]
+timestamp_us = "mocap_timestamp_us"
+frame_number = "mocap_frame_number"
+x_m = "mocap_x_m"
+y_m = "mocap_y_m"
+z_m = "mocap_z_m"
+qw = "mocap_qw"
+qx = "mocap_qx"
+qy = "mocap_qy"
+qz = "mocap_qz"
+tracking_valid = "mocap_tracking_valid"
+
+[receive]
+root_type = "cubs2.sil.PwmOutputs"
+
+[receive.route]
+output0_us = "model:pwm0_us"
+output1_us = "model:pwm1_us"
+output2_us = "model:pwm2_us"
+output3_us = "model:pwm3_us"
+output4_us = "model:pwm4_us"
+output5_us = "model:pwm5_us"
+output6_us = "model:pwm6_us"
+output7_us = "model:pwm7_us"
+output8_us = "model:pwm8_us"
+
+[signals.send]
+mocap_timestamp_us = "model:mocap_timestamp_us"
+mocap_frame_number = "model:mocap_frame_number"
+mocap_x_m = "model:mocap_x_m"
+mocap_y_m = "model:mocap_y_m"
+mocap_z_m = "model:mocap_z_m"
+mocap_qw = "model:mocap_qw"
+mocap_qx = "model:mocap_qx"
+mocap_qy = "model:mocap_qy"
+mocap_qz = "model:mocap_qz"
+mocap_tracking_valid = "model:mocap_tracking_valid"
+
+[debug_log]
+ring_size = 8192
+trigger_signal = "unused"
+path = "artifacts/native-sim-sil/native-sim-plant.csv"
+capture = [
+  "model:time",
+  "model:x_m",
+  "model:y_m",
+  "model:z_m",
+  "model:vx_m_s",
+  "model:vy_m_s",
+  "model:vz_m_s",
+  "model:airspeed_m_s",
+  "model:roll_rad",
+  "model:pitch_rad",
+  "model:yaw_rad",
+  "model:aileron_cmd",
+  "model:elevator_cmd",
+  "model:throttle_cmd",
+  "model:rudder_cmd",
+  "model:stick_roll_cmd",
+  "model:stick_pitch_cmd",
+  "model:stick_throttle_cmd",
+  "model:stick_yaw_cmd",
+  "model:armed_cmd",
+  "model:current_waypoint",
+  "model:desired_speed_m_s",
+  "model:roll_command_rad",
+  "model:course_error_rad",
+]

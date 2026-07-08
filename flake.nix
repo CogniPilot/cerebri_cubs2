@@ -22,55 +22,53 @@
       defaultNativeSimBoard = "native_sim";
       defaultNativeSim64Board = "native_sim/native/64";
       rumocaVersion = "0.9.13";
-      mkRumocaBinaryPackage =
+      mkRumocaPythonPackage =
         pkgs:
         let
           assets = {
             x86_64-linux = {
-              name = "rumoca-linux-x86_64";
-              hash = "sha256-PLU18XMV0JWo1GKRmC9M37H6D2N4Ef8kPLhADwGrMlQ=";
+              name = "rumoca-${rumocaVersion}-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl";
+              hash = "sha256-ZkDYqZv1I2UmvzCTVlsGK/O0CIwO1RG/C3hCmrvggGI=";
             };
             aarch64-linux = {
-              name = "rumoca-linux-aarch64";
-              hash = "sha256-+DCPa3cAa8/4Lyn3NoGItm/8XiKpxRb+3JvaAll21Ng=";
+              name = "rumoca-${rumocaVersion}-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl";
+              hash = "sha256-SqkzmJfOCCskoBh9PBCegeB3yGQcLjeZZM8p8LLDYVU=";
             };
           };
           asset =
             assets.${pkgs.stdenv.hostPlatform.system}
-              or (throw "unsupported Rumoca binary platform: ${pkgs.stdenv.hostPlatform.system}");
+              or (throw "unsupported Rumoca Python wheel platform: ${pkgs.stdenv.hostPlatform.system}");
         in
-        pkgs.stdenvNoCC.mkDerivation {
+        pkgs.python3Packages.buildPythonPackage {
           pname = "rumoca";
           version = rumocaVersion;
+          format = "wheel";
 
           src = pkgs.fetchurl {
             url = "https://github.com/CogniPilot/rumoca/releases/download/v${rumocaVersion}/${asset.name}";
             inherit (asset) hash;
           };
 
-          dontUnpack = true;
-
-          installPhase = ''
-            runHook preInstall
-            install -Dm755 "$src" "$out/bin/rumoca"
-            runHook postInstall
-          '';
+          doCheck = false;
+          pythonImportsCheck = [ "rumoca" ];
 
           meta = {
-            description = "Rumoca Modelica compiler release binary";
+            description = "Rumoca Modelica compiler Python binding";
             homepage = "https://github.com/CogniPilot/rumoca";
             license = lib.licenses.asl20;
             platforms = builtins.attrNames assets;
           };
         };
       mkPythonEnv =
-        pkgs:
+        pkgs: rumocaPythonPackage:
         pkgs.python3.withPackages (
           ps: with ps; [
             anytree
             intelhex
             jinja2
             jsonschema
+            matplotlib
+            numpy
             packaging
             pyelftools
             pykwalify
@@ -80,20 +78,26 @@
             semver
             tqdm
             west
+            rumocaPythonPackage
           ]
         );
       mkFlightPythonEnv =
-        pkgs:
+        pkgs: rumocaPythonPackage:
         pkgs.python3.withPackages (
           ps: with ps; [
             matplotlib
             numpy
+            rumocaPythonPackage
           ]
         );
       mkNativeSimSilPythonEnv =
-        pkgs:
+        pkgs: rumocaPythonPackage:
         pkgs.python3.withPackages (
           ps: with ps; [
+            flatbuffers
+            matplotlib
+            numpy
+            rumocaPythonPackage
             zenoh
           ]
         );
@@ -103,10 +107,10 @@
         system:
         let
           pkgs = pkgsFor system;
-          rumocaPackage = mkRumocaBinaryPackage pkgs;
-          pythonEnv = mkPythonEnv pkgs;
-          flightPythonEnv = mkFlightPythonEnv pkgs;
-          nativeSimSilPythonEnv = mkNativeSimSilPythonEnv pkgs;
+          rumocaPythonPackage = mkRumocaPythonPackage pkgs;
+          pythonEnv = mkPythonEnv pkgs rumocaPythonPackage;
+          flightPythonEnv = mkFlightPythonEnv pkgs rumocaPythonPackage;
+          nativeSimSilPythonEnv = mkNativeSimSilPythonEnv pkgs rumocaPythonPackage;
           hostCc = if system == "x86_64-linux" then pkgs.gcc_multi else pkgs.stdenv.cc;
           hostMultilibTools = lib.optionals (system == "x86_64-linux") [
             pkgs.glibc_multi.dev
@@ -293,6 +297,7 @@
               workspace="$(zephyr_app_workspace "$app")"
 
               export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
+              export CUBS2_RUMOCA_PYTHON="''${CUBS2_RUMOCA_PYTHON:-${pythonEnv}/bin/python}"
               export GNUARMEMB_TOOLCHAIN_PATH="''${GNUARMEMB_TOOLCHAIN_PATH:-${pkgs.gcc-arm-embedded}}"
               export CUBS2_WORKSPACE_ROOT="$workspace"
 
@@ -374,7 +379,7 @@
               inherit text;
             };
 
-          cubs2-build = mkWestApp "cubs2-build" [ rumocaPackage ] ''
+          cubs2-build = mkWestApp "cubs2-build" [ ] ''
             ${commonScript}
 
             app="$(zephyr_app_find_app)"
@@ -393,7 +398,7 @@
               west build -b "$board" -d "$build_dir" "$app" "$@"
           '';
 
-          cubs2-build-native-sim = mkWestApp "cubs2-build-native-sim" [ rumocaPackage ] ''
+          cubs2-build-native-sim = mkWestApp "cubs2-build-native-sim" [ ] ''
             ${commonScript}
 
             app="$(zephyr_app_find_app)"
@@ -412,7 +417,7 @@
               west build -b "$board" -d "$build_dir" "$app" "$@"
           '';
 
-          cubs2-build-native-sim-64 = mkWestApp "cubs2-build-native-sim-64" [ rumocaPackage ] ''
+          cubs2-build-native-sim-64 = mkWestApp "cubs2-build-native-sim-64" [ ] ''
             ${commonScript}
 
             app="$(zephyr_app_find_app)"
@@ -455,7 +460,7 @@
             exec west flash -d "$build_dir" "''${runner_args[@]}" "$@"
           '';
 
-          cubs2-menuconfig = mkWestApp "cubs2-menuconfig" [ rumocaPackage ] ''
+          cubs2-menuconfig = mkWestApp "cubs2-menuconfig" [ ] ''
             ${commonScript}
 
             app="$(zephyr_app_find_app)"
@@ -514,7 +519,7 @@
             name = "rumoca-check";
             runtimeInputs = [
               pkgs.coreutils
-              rumocaPackage
+              pythonEnv
             ];
             text = ''
               model="''${1:-src/FixedWingOuterLoop.mo}"
@@ -524,8 +529,7 @@
                 exit 1
               fi
 
-              rumoca fmt --check "$model"
-              rumoca lint --min-level warning --warnings-as-errors "$model"
+              exec "${pythonEnv}/bin/python" scripts/rumoca_check.py "$model"
             '';
           };
 
@@ -533,15 +537,12 @@
             name = "cubs2-flight-sil-test";
             runtimeInputs = [
               pkgs.coreutils
-              hostCc
-              rumocaPackage
               flightPythonEnv
             ];
             text = ''
               ${commonScript}
 
               app="$(zephyr_app_find_app)"
-              export CUBS2_RUMOCA_EXECUTABLE="''${CUBS2_RUMOCA_EXECUTABLE:-${rumocaPackage}/bin/rumoca}"
               cd "$app"
               exec "${flightPythonEnv}/bin/python" tests/flight/run_cubs2_flight_sil.py "$@"
             '';
@@ -576,6 +577,7 @@
             name = "cubs2-native-sim-sil-run";
             runtimeInputs = [
               pkgs.coreutils
+              pkgs.flatbuffers
               pkgs.zenoh
               nativeSimSilPythonEnv
             ];
@@ -608,6 +610,27 @@
                 tests/zephyr/run_native_sim_zenoh_sil.py "$@"
             '';
           };
+
+          csyn = mkWestApp "csyn" [
+            pkgs.cargo
+            pkgs.pkg-config
+            pkgs.rustc
+          ] ''
+            ${commonScript}
+
+            app="$(zephyr_app_find_app)"
+            zephyr_app_export_common "$app"
+            workspace="$CUBS2_WORKSPACE_ROOT"
+            manifest="$workspace/modules/lib/csyn/rust/Cargo.toml"
+
+            if [ ! -f "$manifest" ]; then
+              printf 'error: csyn Rust CLI not found at %s\n' "$manifest" >&2
+              printf 'run from the app checkout: nix run .#west-update\n' >&2
+              exit 1
+            fi
+
+            exec cargo run --quiet --manifest-path "$manifest" -- "$@"
+          '';
 
           cubs2-native-sim-64-sil-run = pkgs.writeShellApplication {
             name = "cubs2-native-sim-64-sil-run";
@@ -655,7 +678,6 @@
           host-tools = pkgs.buildEnv {
             name = "cerebri-cubs2-host-tools";
             paths = baseTools ++ [
-              rumocaPackage
               cubs2-build
               cubs2-build-native-sim
               cubs2-build-native-sim-64
@@ -667,6 +689,7 @@
               cubs2-native-sim-sil-run
               cubs2-native-sim-64-sil-test
               cubs2-native-sim-64-sil-run
+              csyn
               rumoca-check
             ];
           };
@@ -674,7 +697,7 @@
         {
           inherit
             host-tools
-            rumocaPackage
+            rumocaPythonPackage
             cubs2-build
             cubs2-build-native-sim
             cubs2-build-native-sim-64
@@ -686,10 +709,11 @@
             cubs2-native-sim-sil-run
             cubs2-native-sim-64-sil-test
             cubs2-native-sim-64-sil-run
+            csyn
             rumoca-check
             ;
 
-          rumoca = rumocaPackage;
+          rumoca = rumocaPythonPackage;
           default = host-tools;
         }
       );
@@ -771,6 +795,12 @@
             program = "${packages.cubs2-native-sim-64-sil-run}/bin/cubs2-native-sim-64-sil-run";
             meta.description = "Run CUBS2 Zephyr native_sim/native/64 SIL against an existing executable";
           };
+
+          csyn = {
+            type = "app";
+            program = "${packages.csyn}/bin/csyn";
+            meta.description = "Run the csyn Synapse Zenoh CLI from the CUBS2 west workspace";
+          };
         }
       );
 
@@ -778,8 +808,8 @@
         system:
         let
           pkgs = pkgsFor system;
-          pythonEnv = mkPythonEnv pkgs;
-          rumocaPackage = self.packages.${system}.rumocaPackage;
+          rumocaPythonPackage = self.packages.${system}.rumocaPythonPackage;
+          pythonEnv = mkPythonEnv pkgs rumocaPythonPackage;
           packages = self.packages.${system};
         in
         {
@@ -793,9 +823,9 @@
 
             shellHook = ''
               export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
+              export CUBS2_RUMOCA_PYTHON="''${CUBS2_RUMOCA_PYTHON:-${pythonEnv}/bin/python}"
               export GNUARMEMB_TOOLCHAIN_PATH="''${GNUARMEMB_TOOLCHAIN_PATH:-${pkgs.gcc-arm-embedded}}"
               export ZEPHYR_TOOLCHAIN_VARIANT="''${ZEPHYR_TOOLCHAIN_VARIANT:-gnuarmemb}"
-              export CUBS2_RUMOCA_EXECUTABLE="''${CUBS2_RUMOCA_EXECUTABLE:-${rumocaPackage}/bin/rumoca}"
 
               zephyr_app_shell_find_app() {
                 local dir
@@ -850,7 +880,7 @@
                 export ZEPHYR_BASE="$PWD/zephyr"
               fi
 
-              echo "${appDisplayName} Nix shell: cubs2-west-update, cubs2-build, cubs2-build-native-sim, cubs2-build-native-sim-64, cubs2-flight-sil-test, cubs2-native-sim-sil-test, cubs2-native-sim-64-sil-test, cubs2-native-sim-sil-run, cubs2-native-sim-64-sil-run, cubs2-flash"
+              echo "${appDisplayName} Nix shell: cubs2-west-update, cubs2-build, cubs2-build-native-sim, cubs2-build-native-sim-64, cubs2-flight-sil-test, cubs2-native-sim-sil-test, cubs2-native-sim-64-sil-test, cubs2-native-sim-sil-run, cubs2-native-sim-64-sil-run, csyn, cubs2-flash"
             '';
           };
         }

@@ -95,7 +95,6 @@ static void fixed_wing_map_input(FixedWingOuterLoopState *model,
 
 		/* FixedWingOuterLoop consumes Euler [roll, pitch, yaw] in radians. */
 		csyn_euler_from_quatf(&quat, &roll, &pitch, &yaw);
-		pitch = -pitch;
 	}
 
 	model->position_m[0] = mocap->x;

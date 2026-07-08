@@ -1,574 +1,72 @@
 #!/usr/bin/env python3
-"""Run the CUBS2 staged flight SIL test and generate CI plots."""
+"""Run the CUBS2 staged flight SIL test through the Rumoca Python binding."""
 
 from __future__ import annotations
 
 import argparse
 import base64
 import csv
-import ctypes
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import html
 import math
-import os
 from pathlib import Path
-import re
-import shutil
-import subprocess
 import sys
 import tomllib
 from typing import Callable
 
 import matplotlib
-import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import rumoca as rm
 
 
 ROOT = Path(__file__).resolve().parents[2]
 ARTIFACT_DIR = ROOT / "artifacts" / "flight"
-GENERATED_DIR = ARTIFACT_DIR / "generated"
-CONTROLLER_LIB = ARTIFACT_DIR / "libfixed_wing_outer_loop.so"
-MODEL_FILE = ROOT / "src" / "FixedWingOuterLoop.mo"
 SCENARIO_DIR = ROOT / "tests" / "flight"
 PATTERN_WAYPOINTS = [
     (0.0, 0.0, 0.0),
-    (6.0, 0.0, 3.0),
-    (18.0, 0.0, 3.0),
-    (18.0, 12.0, 3.0),
-    (0.0, 12.0, 3.0),
+    (12.0, 0.0, 3.0),
+    (30.0, 0.0, 3.0),
+    (30.0, 20.0, 3.0),
+    (0.0, 20.0, 3.0),
     (0.0, 0.0, 3.0),
-    (6.0, 0.0, 3.0),
+    (12.0, 0.0, 3.0),
 ]
 
 
 @dataclass(frozen=True)
 class ScenarioConfig:
+    path: Path
     dt: float
     t_end: float
     output: Path
 
 
-@dataclass
-class PlantState:
-    p: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 0.10], dtype=float))
-    v_b: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=float))
-    q: np.ndarray = field(default_factory=lambda: np.array([1.0, 0.0, 0.0, 0.0], dtype=float))
-    omega: np.ndarray = field(default_factory=lambda: np.zeros(3, dtype=float))
-
-
-@dataclass
-class PlantDerivative:
-    p: np.ndarray
-    v_b: np.ndarray
-    q_dot: np.ndarray
-    omega: np.ndarray
-
-
-@dataclass
-class SurfaceCommand:
-    ail: float = 0.0
-    elev: float = 0.0
-    rud: float = 0.0
-    thr: float = 0.0
-
-
-@dataclass
-class StickCommand:
-    roll: float = 0.0
-    pitch: float = 0.0
-    yaw: float = 0.0
-    throttle: float = 0.0
-
-
-@dataclass
-class InnerLoopState:
-    i_p: float = 0.0
-    i_q: float = 0.0
-    i_r: float = 0.0
-    phi_sp: float = 0.0
-    theta_sp: float = 0.0
-
-
-@dataclass
-class PlantOutput:
-    position: np.ndarray
-    velocity_w: np.ndarray
-    euler: np.ndarray
-    up_body: np.ndarray
-    airspeed: float
-
-
-@dataclass
-class ControllerApi:
-    state_type: type[ctypes.Structure]
-    lib: ctypes.CDLL
-
-    def new_state(self, mode: str) -> ctypes.Structure:
-        state = self.state_type()
-        self.lib.FixedWingOuterLoop_startup(ctypes.byref(state))
-        configure_controller(state, mode)
-        self.lib.FixedWingOuterLoop_recalibrate(ctypes.byref(state))
-        return state
-
-    def step(self, state: ctypes.Structure, y: PlantOutput) -> None:
-        for i in range(3):
-            state.position_m[i] = float(y.position[i])
-            state.euler_rad[i] = float(y.euler[i])
-        self.lib.FixedWingOuterLoop_dostep(ctypes.byref(state))
-
-
-def run(cmd: list[str], *, cwd: Path = ROOT) -> None:
-    print("+", " ".join(cmd), flush=True)
-    subprocess.run(cmd, cwd=cwd, check=True)
-
-
-def codegen_controller() -> None:
-    rumoca = os.environ.get("CUBS2_RUMOCA_EXECUTABLE", "rumoca")
-    shutil.rmtree(GENERATED_DIR, ignore_errors=True)
-    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    run([
-        rumoca,
-        "compile",
-        str(MODEL_FILE),
-        "--model",
-        "FixedWingOuterLoop",
-        "--target",
-        "embedded-c-galec",
-        "--output",
-        str(GENERATED_DIR),
-    ])
-
-
-def build_controller_library() -> ControllerApi:
-    ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
-    GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    codegen_controller()
-
-    run([
-        os.environ.get("CC", "cc"),
-        "-std=c11",
-        "-O2",
-        "-fPIC",
-        "-shared",
-        "-Wall",
-        "-Wextra",
-        "-Werror",
-        "-I",
-        str(GENERATED_DIR),
-        str(GENERATED_DIR / "FixedWingOuterLoop.c"),
-        "-lm",
-        "-o",
-        str(CONTROLLER_LIB),
-    ])
-
-    state_type = parse_controller_state(GENERATED_DIR / "FixedWingOuterLoop.h")
-    lib = ctypes.CDLL(str(CONTROLLER_LIB))
-    pointer = ctypes.POINTER(state_type)
-    lib.FixedWingOuterLoop_startup.argtypes = [pointer]
-    lib.FixedWingOuterLoop_startup.restype = None
-    lib.FixedWingOuterLoop_recalibrate.argtypes = [pointer]
-    lib.FixedWingOuterLoop_recalibrate.restype = None
-    lib.FixedWingOuterLoop_dostep.argtypes = [pointer]
-    lib.FixedWingOuterLoop_dostep.restype = None
-    return ControllerApi(state_type=state_type, lib=lib)
-
-
-def parse_controller_state(header: Path) -> type[ctypes.Structure]:
-    text = header.read_text(encoding="utf-8")
-    match = re.search(r"typedef struct \{(?P<body>.*?)\} FixedWingOuterLoopState;", text, re.S)
-    if match is None:
-        raise RuntimeError(f"could not find FixedWingOuterLoopState in {header}")
-
-    fields = []
-    for line in match.group("body").splitlines():
-        decl = re.match(r"\s*(double|int32_t|bool)\s+([A-Za-z_][A-Za-z0-9_]*)([0-9\]\[]*)\s*;", line)
-        if decl is None:
-            continue
-        c_type = {
-            "double": ctypes.c_double,
-            "int32_t": ctypes.c_int32,
-            "bool": ctypes.c_bool,
-        }[decl.group(1)]
-        dims = [int(value) for value in re.findall(r"\[(\d+)\]", decl.group(3))]
-        for dim in reversed(dims):
-            c_type = c_type * dim
-        fields.append((decl.group(2), c_type))
-
-    class FixedWingOuterLoopState(ctypes.Structure):
-        _fields_ = fields
-
-    return FixedWingOuterLoopState
-
-
-def set_route(state: ctypes.Structure, waypoints: list[tuple[float, float, float]], cruise_speed: float) -> None:
-    state.route_nSegments = 6
-    state.guidance_route_nSegments = 6
-    state.route_cruiseSpeed = cruise_speed
-    state.guidance_route_cruiseSpeed = cruise_speed
-    state.route_altitudeToFlightPathGain = 2.0
-    state.guidance_route_altitudeToFlightPathGain = 2.0
-    state.route_altitudeLookaheadDistance = 8.0
-    state.guidance_route_altitudeLookaheadDistance = 8.0
-    state.route_flightPathAngleLimit = 0.12
-    state.guidance_route_flightPathAngleLimit = 0.12
-    state.route_speedToAccelerationGain = 1.0
-    state.guidance_route_speedToAccelerationGain = 1.0
-    state.route_crossTrackSteeringDistance = 2.0
-    state.guidance_route_crossTrackSteeringDistance = 2.0
-    state.route_waypointSwitchingDistance = 3.0
-    state.guidance_route_waypointSwitchingDistance = 3.0
-    for i, waypoint in enumerate(waypoints):
-        for j, value in enumerate(waypoint):
-            state.route_waypoints[i][j] = value
-            state.guidance_route_waypoints[i][j] = value
-
-
-def configure_controller(state: ctypes.Structure, mode: str) -> None:
-    for prefix in ("vehicle", "tecs_vehicle", "attitude_vehicle"):
-        setattr(state, f"{prefix}_mass", 0.065)
-        setattr(state, f"{prefix}_thrustMax", 0.30)
-        setattr(state, f"{prefix}_trimThrust", 0.10)
-        setattr(state, f"{prefix}_envelopeDrag", 0.07)
-
-    straight = [
-        (0.0, 0.0, 3.0),
-        (30.0, 0.0, 3.0),
-        (60.0, 0.0, 3.0),
-        (90.0, 0.0, 3.0),
-        (120.0, 0.0, 3.0),
-        (150.0, 0.0, 3.0),
-        (180.0, 0.0, 3.0),
-    ]
-    set_route(state, PATTERN_WAYPOINTS if mode == "pattern" else straight, 4.0)
-
-
-def clamp(value: float, lower: float, upper: float) -> float:
-    return min(max(value, lower), upper)
-
-
-def quat_to_dcm(q: np.ndarray) -> np.ndarray:
-    a, b, c, d = q
-    return np.array([
-        [1.0 - 2.0 * (c * c + d * d), 2.0 * (b * c - a * d), 2.0 * (b * d + a * c)],
-        [2.0 * (b * c + a * d), 1.0 - 2.0 * (b * b + d * d), 2.0 * (c * d - a * b)],
-        [2.0 * (b * d - a * c), 2.0 * (c * d + a * b), 1.0 - 2.0 * (b * b + c * c)],
-    ])
-
-
-def quat_derivative(q: np.ndarray, omega: np.ndarray) -> np.ndarray:
-    a, b, c, d = q
-    err = float(q @ q - 1.0)
-    return np.array([
-        0.5 * (-b * omega[0] - c * omega[1] - d * omega[2]) - err * a,
-        0.5 * (a * omega[0] - d * omega[1] + c * omega[2]) - err * b,
-        0.5 * (d * omega[0] + a * omega[1] - b * omega[2]) - err * c,
-        0.5 * (-c * omega[0] + b * omega[1] + a * omega[2]) - err * d,
-    ])
-
-
-def quat_normalize(q: np.ndarray) -> np.ndarray:
-    norm = np.linalg.norm(q)
-    return q / norm if norm > 1e-12 else q
-
-
-def euler_from_quat(q: np.ndarray) -> np.ndarray:
-    a, b, c, d = q
-    sinp = clamp(2.0 * (a * c - d * b), -1.0, 1.0)
-    return np.array([
-        math.atan2(2.0 * (a * b + c * d), 1.0 - 2.0 * (b * b + c * c)),
-        math.asin(sinp),
-        math.atan2(2.0 * (a * d + b * c), 1.0 - 2.0 * (c * c + d * d)),
-    ])
-
-
-def plant_outputs(x: PlantState) -> PlantOutput:
-    rotation = quat_to_dcm(x.q)
-    velocity_w = rotation @ x.v_b
-    return PlantOutput(
-        position=x.p.copy(),
-        velocity_w=velocity_w,
-        euler=euler_from_quat(x.q),
-        up_body=rotation[2, :].copy(),
-        airspeed=float(np.linalg.norm(x.v_b) + 1e-6),
-    )
-
-
-def sportcub_forces(x: PlantState, u: SurfaceCommand) -> tuple[np.ndarray, np.ndarray]:
-    mass = 0.065
-    rho = 1.225
-    wing_area = 0.055
-    span = 0.617
-    cbar = 0.09
-    wing_incidence = math.radians(6.0)
-    thrust_max = 0.30
-    cl0 = 0.5
-    cla = 4.7
-    cd0 = 0.06
-    k_ind = 0.09
-    cd0_fp = 0.30
-    cy_fp_coef = 0.50
-    cm0 = 0.0
-    cma = -0.8
-    cmq = -12.0
-    cmde = 0.3
-    cyb = -0.50
-    cyda = 0.004
-    cydr = -0.015
-    cyp = -0.15
-    cyr = 0.20
-    clb = -0.25
-    clp = -0.50
-    clr = 0.15
-    clda = 0.05
-    cldr = 0.006
-    cnb = 0.06
-    cnp = 0.010
-    cnr = -0.15
-    cndr = 0.015
-    cnda = 0.006
-    alpha_stall = math.radians(20.0)
-    blend_width = math.radians(5.0)
-    max_defl_ail = math.radians(30.0)
-    max_defl_elev = math.radians(24.0)
-    max_defl_rud = math.radians(20.0)
-    ground_wn = 350.0
-    ground_zeta = 0.6
-    ground_c_xy = 0.05
-    ground_mu = 0.15
-    ground_max_force_per_wheel = 20.0
-    tailwheel_steer_gain = 0.03
-    wheels = [
-        np.array([0.1, 0.1, -0.1]),
-        np.array([0.1, -0.1, -0.1]),
-        np.array([-0.4, 0.0, 0.0]),
-    ]
-
-    body_u = x.v_b[0]
-    body_v_frd = -x.v_b[1]
-    body_w_frd = -x.v_b[2]
-    v_total = math.sqrt(body_u * body_u + body_v_frd * body_v_frd + body_w_frd * body_w_frd) + 1e-6
-    v_xz = math.sqrt(body_u * body_u + body_w_frd * body_w_frd) + 1e-6
-    alpha = math.atan2(body_w_frd, body_u) + wing_incidence
-    beta = math.atan2(body_v_frd, v_xz)
-    qbar = 0.5 * rho * v_total * v_total
-    p_frd = x.omega[0]
-    q_frd = -x.omega[1]
-    r_frd = -x.omega[2]
-
-    wind_x = body_u / v_total
-    wind_y = body_v_frd / v_total
-    wind_z = body_w_frd / v_total
-    ref_x = 0.0 if abs(wind_z) < abs(wind_x) else 1.0
-    ref_z = 1.0 if abs(wind_z) < abs(wind_x) else 0.0
-    ref_dot = ref_x * wind_x + ref_z * wind_z
-    wind_zt = np.array([ref_x - ref_dot * wind_x, -ref_dot * wind_y, ref_z - ref_dot * wind_z])
-    wind_z_axis = wind_zt / (np.linalg.norm(wind_zt) + 1e-6)
-    wind_x_axis = np.array([wind_x, wind_y, wind_z])
-    wind_y_axis = np.cross(wind_z_axis, wind_x_axis)
-
-    ail_rad = clamp(max_defl_ail * u.ail, -max_defl_ail, max_defl_ail)
-    elev_rad = clamp(max_defl_elev * u.elev, -max_defl_elev, max_defl_elev)
-    rud_rad = clamp(-max_defl_rud * u.rud, -max_defl_rud, max_defl_rud)
-    thr_out = clamp(u.thr, 0.0, 1.0)
-
-    sigma = (1.0 + math.tanh((alpha - alpha_stall) / blend_width)) / 2.0
-    cl_lin = cl0 + cla * alpha
-    cl_fp = 2.0 * math.sin(alpha) * math.cos(alpha)
-    lift_coef = (1.0 - sigma) * cl_lin + sigma * cl_fp
-    cd_lin = cd0 + k_ind * cl_lin * cl_lin
-    cd_fp = cd0_fp + 2.0 * math.sin(alpha) * math.sin(alpha)
-    drag_coef = (1.0 - sigma) * cd_lin + sigma * cd_fp
-    cy_lin = (
-        cyb * beta
-        + cyda * ail_rad
-        + cydr * rud_rad
-        + cyp * (span / (2.0 * v_total)) * p_frd
-        + cyr * (span / (2.0 * v_total)) * r_frd
-    )
-    side_coef = (1.0 - sigma) * cy_lin + sigma * cy_fp_coef * math.sin(beta) * math.cos(alpha)
-    roll_coef = (
-        clda * ail_rad
-        + cldr * rud_rad
-        + clb * beta
-        + clp * (span / (2.0 * v_total)) * p_frd
-        + clr * (span / (2.0 * v_total)) * r_frd
-    )
-    pitch_coef = cm0 + cma * alpha + cmde * elev_rad + cmq * (cbar / (2.0 * v_total)) * q_frd
-    yaw_coef = (
-        cnb * beta
-        + cndr * rud_rad
-        + cnda * ail_rad
-        + cnp * (span / (2.0 * v_total)) * p_frd
-        + cnr * (span / (2.0 * v_total)) * r_frd
-    )
-
-    aero_frd = qbar * wing_area * (
-        wind_x_axis * (-drag_coef) + wind_y_axis * side_coef + wind_z_axis * (-lift_coef)
-    )
-    moment_frd = qbar * wing_area * np.array([span * roll_coef, cbar * pitch_coef, span * yaw_coef])
-    force_aero = np.array([aero_frd[0], -aero_frd[1], -aero_frd[2]])
-    moment_aero = np.array([moment_frd[0], -moment_frd[1], -moment_frd[2]])
-    force_thrust = np.array([thrust_max * thr_out, 0.0, 0.0])
-
-    rotation = quat_to_dcm(x.q)
-    ground_k = mass * ground_wn * ground_wn
-    ground_c_vert = 2.0 * ground_zeta * mass * ground_wn
-    force_ground = np.zeros(3)
-    moment_ground = np.zeros(3)
-    tailwheel_vx = 0.0
-    tailwheel_height = 1.0
-
-    for index, wheel in enumerate(wheels):
-        wheel_w = rotation @ wheel
-        wheel_height = x.p[2] + wheel_w[2]
-        wheel_v_b = x.v_b + np.cross(x.omega, wheel)
-        wheel_v_w = rotation @ wheel_v_b
-        if index == 2:
-            tailwheel_vx = wheel_v_w[0]
-            tailwheel_height = wheel_height
-
-        normal_unclamped = -wheel_height * ground_k - wheel_v_w[2] * ground_c_vert
-        normal = clamp(normal_unclamped, 0.0, ground_max_force_per_wheel)
-        lateral_xy = np.array([-wheel_v_w[0] * ground_c_xy, -wheel_v_w[1] * ground_c_xy])
-        lateral_mag = float(np.linalg.norm(lateral_xy) + 1e-9)
-        lateral_scale = min(1.0, ground_mu * normal / lateral_mag)
-        force_w = np.array([lateral_scale * lateral_xy[0], lateral_scale * lateral_xy[1], normal])
-        if wheel_height >= 0.0:
-            force_w[:] = 0.0
-
-        force_b = rotation.T @ force_w
-        force_ground += force_b
-        moment_ground += np.cross(wheel, force_b)
-
-    if tailwheel_height < 0.0:
-        rud_tail = max_defl_rud * clamp(u.rud, -1.0, 1.0)
-        moment_ground[2] += tailwheel_steer_gain * rud_tail * (math.sqrt(tailwheel_vx * tailwheel_vx + 1.0) - 1.0)
-
-    return force_aero + force_ground + force_thrust, moment_aero + moment_ground
-
-
-def plant_derivative(x: PlantState, u: SurfaceCommand) -> PlantDerivative:
-    mass = 0.065
-    jx = 8.0e-4
-    jy = 1.2e-3
-    jz = 1.8e-3
-    jxz = 1.0e-4
-    rotation = quat_to_dcm(x.q)
-    force_b, moment_b = sportcub_forces(x, u)
-    gravity_b = rotation.T @ np.array([0.0, 0.0, -9.81])
-    velocity_dot = force_b / mass + gravity_b - np.cross(x.omega, x.v_b)
-    angular_momentum = np.array([
-        jx * x.omega[0] + jxz * x.omega[2],
-        jy * x.omega[1],
-        jxz * x.omega[0] + jz * x.omega[2],
-    ])
-    body_moment = moment_b - np.cross(x.omega, angular_momentum)
-    denominator = jx * jz - jxz * jxz
-    omega_dot = np.array([
-        (jz * body_moment[0] - jxz * body_moment[2]) / denominator,
-        body_moment[1] / jy,
-        (-jxz * body_moment[0] + jx * body_moment[2]) / denominator,
-    ])
-    return PlantDerivative(
-        p=rotation @ x.v_b,
-        v_b=velocity_dot,
-        q_dot=quat_derivative(x.q, x.omega),
-        omega=omega_dot,
-    )
-
-
-def add_scaled(x: PlantState, dx: PlantDerivative, scale: float) -> PlantState:
-    return PlantState(
-        p=x.p + scale * dx.p,
-        v_b=x.v_b + scale * dx.v_b,
-        q=quat_normalize(x.q + scale * dx.q_dot),
-        omega=x.omega + scale * dx.omega,
-    )
-
-
-def plant_rk4_step(x: PlantState, u: SurfaceCommand, dt: float) -> PlantState:
-    k1 = plant_derivative(x, u)
-    k2 = plant_derivative(add_scaled(x, k1, 0.5 * dt), u)
-    k3 = plant_derivative(add_scaled(x, k2, 0.5 * dt), u)
-    k4 = plant_derivative(add_scaled(x, k3, dt), u)
-    return PlantState(
-        p=x.p + dt * (k1.p + 2.0 * k2.p + 2.0 * k3.p + k4.p) / 6.0,
-        v_b=x.v_b + dt * (k1.v_b + 2.0 * k2.v_b + 2.0 * k3.v_b + k4.v_b) / 6.0,
-        q=quat_normalize(x.q + dt * (k1.q_dot + 2.0 * k2.q_dot + 2.0 * k3.q_dot + k4.q_dot) / 6.0),
-        omega=x.omega + dt * (k1.omega + 2.0 * k2.omega + 2.0 * k3.omega + k4.omega) / 6.0,
-    )
-
-
-def inner_loop_step(state: InnerLoopState, stick: StickCommand, x: PlantState, y: PlantOutput, dt: float, armed: bool) -> SurfaceCommand:
-    armed_value = 1.0 if armed else 0.0
-    phi = math.atan2(y.up_body[1], y.up_body[2])
-    theta = math.atan2(y.up_body[0], y.up_body[2])
-    climb_auth = clamp((y.airspeed - 2.6) / (3.6 - 2.6), 0.0, 1.0)
-    rate_phi = armed_value * stick.roll * 1.5
-    pitch_rate = stick.pitch * 0.9 * (climb_auth if stick.pitch > 0.0 else 1.0)
-    rate_theta = armed_value * pitch_rate
-
-    phi_dot = min(0.0, rate_phi) if state.phi_sp > 0.90 else max(0.0, rate_phi) if state.phi_sp < -0.90 else rate_phi
-    theta_dot = min(0.0, rate_theta) if state.theta_sp > 0.45 else max(0.0, rate_theta) if state.theta_sp < -0.45 else rate_theta
-    state.phi_sp += phi_dot * dt
-    state.theta_sp += theta_dot * dt
-
-    theta_eff = min(state.theta_sp, -0.06 * (2.6 - y.airspeed)) if y.airspeed < 2.6 else state.theta_sp
-    p_sp = clamp(5.0 * (state.phi_sp - phi), -4.0, 4.0)
-    q_up_sp = clamp(5.0 * (theta_eff - theta), -2.5, 2.5)
-    r_sp = stick.yaw
-    e_p = p_sp - x.omega[0]
-    e_q = q_up_sp - (-x.omega[1])
-    e_r = r_sp - x.omega[2]
-
-    state.i_p += (min(0.0, armed_value * e_p) if state.i_p > 1.0 else max(0.0, armed_value * e_p) if state.i_p < -1.0 else armed_value * e_p) * dt
-    state.i_q += (min(0.0, armed_value * e_q) if state.i_q > 1.0 else max(0.0, armed_value * e_q) if state.i_q < -1.0 else armed_value * e_q) * dt
-    state.i_r += (min(0.0, armed_value * e_r) if state.i_r > 0.6 else max(0.0, armed_value * e_r) if state.i_r < -0.6 else armed_value * e_r) * dt
-
-    return SurfaceCommand(
-        ail=0.45 * e_p + 0.30 * clamp(state.i_p, -1.0, 1.0),
-        elev=0.55 * e_q + 0.40 * clamp(state.i_q, -1.0, 1.0),
-        rud=0.40 * e_r + 0.10 * clamp(state.i_r, -0.6, 0.6),
-        thr=armed_value * stick.throttle,
-    )
-
-
 def stage_end_time(mode: str) -> float:
-    return {"takeoff": 8.0, "altitude": 14.0, "heading": 18.0}.get(mode, 150.0)
+    return {"takeoff": 8.0, "altitude": 16.0, "heading": 24.0}.get(mode, 150.0)
+
+
+def scenario_path(mode: str) -> Path:
+    return SCENARIO_DIR / f"rumoca-scenario.{mode}.toml"
 
 
 def load_scenario_config(mode: str) -> ScenarioConfig:
-    path = SCENARIO_DIR / f"rumoca-scenario.{mode}.toml"
+    path = scenario_path(mode)
     if not path.exists():
-        return ScenarioConfig(
-            dt=0.02,
-            t_end=stage_end_time(mode),
-            output=ARTIFACT_DIR / f"{mode}.csv",
-        )
+        return ScenarioConfig(path=path, dt=0.02, t_end=stage_end_time(mode), output=ARTIFACT_DIR / f"{mode}.csv")
+
     data = tomllib.loads(path.read_text(encoding="utf-8"))
     sim = data.get("sim", {})
     output = Path(sim.get("output", f"artifacts/flight/{mode}.csv"))
     if not output.is_absolute():
         output = ROOT / output
     return ScenarioConfig(
+        path=path,
         dt=float(sim.get("dt", 0.02)),
         t_end=float(sim.get("t_end", stage_end_time(mode))),
         output=output,
     )
-
-
-def initial_plant(mode: str) -> PlantState:
-    plant = PlantState()
-    if mode in {"altitude", "heading"}:
-        plant.p[2] = 3.0
-        plant.v_b[0] = 4.0
-    if mode == "heading":
-        yaw0 = -0.5
-        plant.q[0] = math.cos(yaw0 / 2.0)
-        plant.q[3] = math.sin(yaw0 / 2.0)
-    return plant
 
 
 def csv_fields() -> list[str]:
@@ -583,94 +81,72 @@ def csv_fields() -> list[str]:
     ]
 
 
-def simulate_stage(api: ControllerApi, mode: str, t_end: float | None = None) -> list[dict[str, float | str]]:
-    scenario = load_scenario_config(mode)
-    controller = api.new_state(mode)
-    plant = initial_plant(mode)
-    inner = InnerLoopState()
-    stick = StickCommand()
-    surface = SurfaceCommand()
-    laps = 0
-    previous_waypoint = 1
-    landing = False
-    armed = True
-    plant_dt = 0.005
-    inner_dt = 0.01
-    outer_dt = scenario.dt
-    log_dt = scenario.dt
-    next_inner = 0.0
-    next_outer = 0.0
-    next_log = 0.0
+def result_columns(result: rm.Result) -> dict[str, list[float]]:
+    columns = {"time": [float(value) for value in result.time]}
+    for name in result.names:
+        columns[name] = [float(value) for value in result[name]]
+    return columns
+
+
+def sample(columns: dict[str, list[float]], index: int, *keys: str, default: float = 0.0) -> float:
+    for key in keys:
+        values = columns.get(key)
+        if values is not None:
+            return values[index]
+    return default
+
+
+def normalize_rumoca_result(result: rm.Result, mode: str) -> list[dict[str, float | str]]:
+    columns = result_columns(result)
     rows: list[dict[str, float | str]] = []
+    count = len(columns["time"])
 
-    t_final = t_end if t_end is not None else scenario.t_end
-    for t in np.arange(0.0, t_final + 0.5 * plant_dt, plant_dt):
-        y = plant_outputs(plant)
-        if t + 1e-9 >= next_outer:
-            api.step(controller, y)
-            if controller.currentWaypoint < previous_waypoint:
-                laps += 1
-            previous_waypoint = controller.currentWaypoint
-            landing = mode == "pattern" and laps >= 2
-            next_outer += outer_dt
+    for index in range(count):
+        vx = sample(columns, index, "vehicle.velocity[1]", "vehicle.v_w[1]", "vx_m_s")
+        vy = sample(columns, index, "vehicle.velocity[2]", "vehicle.v_w[2]", "vy_m_s")
+        heading = math.atan2(vy, vx) if abs(vx) + abs(vy) > 1e-12 else 0.0
+        desired_altitude = sample(
+            columns,
+            index,
+            "outerLoop.guidance.pathAltitude",
+            "targetAltitude_m",
+            default=3.0 if mode in {"altitude", "heading", "pattern"} else sample(columns, index, "z_m"),
+        )
 
-        if mode == "takeoff":
-            stick = StickCommand(roll=0.0, pitch=0.0 if t < 0.8 else 0.55, yaw=0.0, throttle=1.0)
-        elif landing:
-            stick = StickCommand(roll=0.0, pitch=-0.25, yaw=0.0, throttle=0.0 if plant.p[2] < 0.35 else 0.12)
-        else:
-            stick = StickCommand(
-                roll=controller.aileron,
-                pitch=controller.elevator,
-                yaw=controller.rudder,
-                throttle=controller.throttle,
-            )
-        armed = not (landing and plant.p[2] < 0.25)
+        rows.append({
+            "time": sample(columns, index, "time_s", "time"),
+            "mode": mode,
+            "x": sample(columns, index, "x_m", "vehicle.position[1]", "vehicle.p[1]"),
+            "y": sample(columns, index, "y_m", "vehicle.position[2]", "vehicle.p[2]"),
+            "z": sample(columns, index, "z_m", "vehicle.position[3]", "vehicle.p[3]"),
+            "roll": sample(columns, index, "roll_rad", "euler_rad[1]", "outerLoop.euler_rad[1]"),
+            "pitch": sample(columns, index, "pitch_rad", "euler_rad[2]", "outerLoop.euler_rad[2]"),
+            "yaw": sample(columns, index, "yaw_rad", "euler_rad[3]", "outerLoop.euler_rad[3]"),
+            "airspeed": sample(columns, index, "airspeed_m_s", "vehicle.airspeed", "vehicle.Vt"),
+            "stick_roll": sample(columns, index, "innerLoop.stick_roll", "roll_cmd"),
+            "stick_pitch": sample(columns, index, "innerLoop.stick_pitch", "pitch_cmd"),
+            "stick_yaw": sample(columns, index, "innerLoop.stick_yaw"),
+            "stick_throttle": sample(columns, index, "innerLoop.stick_throttle", "throttle_cmd"),
+            "surface_ail": sample(columns, index, "vehicle.ail", "innerLoop.ail"),
+            "surface_elev": sample(columns, index, "vehicle.elev", "innerLoop.elev"),
+            "surface_rud": sample(columns, index, "vehicle.rud", "innerLoop.rud"),
+            "surface_thr": sample(columns, index, "vehicle.thr", "innerLoop.thr"),
+            "current_waypoint": sample(columns, index, "current_waypoint", "outerLoop.currentWaypoint", default=1.0),
+            "laps": sample(columns, index, "laps", "lapCount"),
+            "desired_heading": sample(columns, index, "desired_heading_rad", "outerLoop.desiredHeading", "outerLoop.guidance.setpoints.heading"),
+            "desired_altitude": desired_altitude,
+            "desired_flight_path_angle": sample(columns, index, "outerLoop.desiredFlightPathAngle", "outerLoop.guidance.setpoints.flightPathAngle", "flightPathAngleSetpoint"),
+            "desired_acceleration": sample(columns, index, "outerLoop.desiredAcceleration", "outerLoop.guidance.setpoints.acceleration", "accelerationSetpoint"),
+            "heading": heading,
+            "course_error": sample(columns, index, "outerLoop.courseError", "outerLoop.attitude.courseError"),
+            "roll_command": sample(columns, index, "outerLoop.rollCommand", "outerLoop.attitude.rollCommand", "roll_cmd"),
+            "inner_roll_command": sample(columns, index, "innerLoop.phi_sp"),
+            "pitch_command": sample(columns, index, "innerLoop.theta_sp", "pitch_cmd"),
+            "tecs_pitch_command": sample(columns, index, "outerLoop.tecs.pitchCommand", "tecs.pitchCommand"),
+            "tecs_thrust_command": sample(columns, index, "outerLoop.tecs.thrustCommand", "tecs.thrustCommand"),
+            "mission_phase": sample(columns, index, "mission_phase", default=1.0),
+        })
 
-        if t + 1e-9 >= next_inner:
-            surface = inner_loop_step(inner, stick, plant, y, inner_dt, armed)
-            next_inner += inner_dt
-
-        if t + 1e-9 >= next_log:
-            mission_phase = 3.0 if landing else 2.0 if controller.airborne else 1.0
-            rows.append({
-                "time": float(t),
-                "mode": mode,
-                "x": float(y.position[0]),
-                "y": float(y.position[1]),
-                "z": float(y.position[2]),
-                "roll": float(y.euler[0]),
-                "pitch": float(y.euler[1]),
-                "yaw": float(y.euler[2]),
-                "airspeed": y.airspeed,
-                "stick_roll": stick.roll,
-                "stick_pitch": stick.pitch,
-                "stick_yaw": stick.yaw,
-                "stick_throttle": stick.throttle,
-                "surface_ail": surface.ail,
-                "surface_elev": surface.elev,
-                "surface_rud": surface.rud,
-                "surface_thr": surface.thr,
-                "current_waypoint": float(controller.currentWaypoint),
-                "laps": float(laps),
-                "desired_heading": controller.desiredHeading,
-                "desired_altitude": controller.guidance_pathAltitude,
-                "desired_flight_path_angle": controller.desiredFlightPathAngle,
-                "desired_acceleration": controller.desiredAcceleration,
-                "heading": math.atan2(y.velocity_w[1], y.velocity_w[0]),
-                "course_error": controller.courseError,
-                "roll_command": controller.rollCommand,
-                "inner_roll_command": inner.phi_sp,
-                "pitch_command": inner.theta_sp,
-                "tecs_pitch_command": controller.tecs_pitchCommand,
-                "tecs_thrust_command": controller.tecs_thrustCommand,
-                "mission_phase": mission_phase,
-            })
-            next_log += log_dt
-
-        plant = plant_rk4_step(plant, surface, plant_dt)
-
-    write_csv(scenario.output, rows)
     return rows
 
 
@@ -681,6 +157,19 @@ def write_csv(path: Path, rows: list[dict[str, float | str]]) -> None:
         writer.writeheader()
         writer.writerows(rows)
     print(f"wrote {path}")
+
+
+def run_rumoca_stage(mode: str, t_end: float | None = None) -> list[dict[str, float | str]]:
+    scenario = load_scenario_config(mode)
+    if not scenario.path.exists():
+        raise FileNotFoundError(f"Rumoca scenario not found: {scenario.path}")
+
+    print(f"simulate {scenario.path} with Rumoca Python binding", flush=True)
+    _session, model, sim_config = rm.Session.from_scenario(str(scenario.path))
+    result = model.simulate(t=(0.0, t_end if t_end is not None else scenario.t_end), config=sim_config)
+    rows = normalize_rumoca_result(result, mode)
+    write_csv(scenario.output, rows)
+    return rows
 
 
 def f(row: dict[str, float | str], key: str) -> float:
@@ -709,14 +198,14 @@ def unwrap(samples: list[float]) -> list[float]:
     result = [samples[0]]
     offset = 0.0
     previous = samples[0]
-    for sample in samples[1:]:
-        delta = sample - previous
+    for sample_value in samples[1:]:
+        delta = sample_value - previous
         if delta > math.pi:
             offset -= 2.0 * math.pi
         elif delta < -math.pi:
             offset += 2.0 * math.pi
-        result.append(sample + offset)
-        previous = sample
+        result.append(sample_value + offset)
+        previous = sample_value
     return result
 
 
@@ -749,6 +238,7 @@ def assert_pattern(rows: list[dict[str, float | str]]) -> None:
 
 def save_plot(fig: plt.Figure, name: str) -> Path:
     path = ARTIFACT_DIR / name
+    path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=170)
     plt.close(fig)
     print(f"wrote {path}")
@@ -933,7 +423,7 @@ def write_markdown_report(stages: dict[str, list[dict[str, float | str]]], check
     lines = [
         "# CUBS2 Flight SIL",
         "",
-        "Generated by the Python SIL harness. The generated Rumoca controller C is loaded through `ctypes`; the plant, inner loop, checks, and plots are Python.",
+        "Generated by the Python SIL harness. Python uses the Rumoca Python binding to compile each Modelica scenario and execute Rumoca simulation; Python only normalizes the returned trace for checks and plots.",
         "",
         "GitHub Actions job summaries cannot reliably embed local/generated images directly. Open the uploaded `cerebri-cubs2-flight-sil` artifact to view `flight-report.html` and the PNG plots.",
         "",
@@ -1016,19 +506,14 @@ def write_html_report(check_results: list[tuple[str, str, str]], plot_paths: lis
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--pattern-t-end", type=float, default=None)
     args = parser.parse_args()
 
-    api = build_controller_library() if not args.skip_build else ControllerApi(
-        state_type=parse_controller_state(GENERATED_DIR / "FixedWingOuterLoop.h"),
-        lib=ctypes.CDLL(str(CONTROLLER_LIB)),
-    )
     stages = {
-        "takeoff": simulate_stage(api, "takeoff"),
-        "altitude": simulate_stage(api, "altitude"),
-        "heading": simulate_stage(api, "heading"),
-        "pattern": simulate_stage(api, "pattern", t_end=args.pattern_t_end),
+        "takeoff": run_rumoca_stage("takeoff"),
+        "altitude": run_rumoca_stage("altitude"),
+        "heading": run_rumoca_stage("heading"),
+        "pattern": run_rumoca_stage("pattern", t_end=args.pattern_t_end),
     }
     plot_paths = plot(stages)
     check_results = run_checks(stages)

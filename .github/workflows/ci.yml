@@ -345,6 +345,9 @@ jobs:
             cerebri_cubs2/artifacts/native-sim-sil/*.csv
             cerebri_cubs2/artifacts/native-sim-sil/*.log
             cerebri_cubs2/artifacts/native-sim-sil/*.md
+            cerebri_cubs2/artifacts/native-sim-sil/*.png
+            cerebri_cubs2/artifacts/native-sim-sil/*.html
+            cerebri_cubs2/artifacts/native-sim-sil/*.bfbs
           if-no-files-found: warn
 
       - name: Publish Zephyr SIL flight test summary
