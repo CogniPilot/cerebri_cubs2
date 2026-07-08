@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ARTIFACT_DIR = ROOT / "artifacts" / "flight"
 SCENARIO_DIR = ROOT / "tests" / "flight"
 PATTERN_WAYPOINTS = [
-    (0.0, 0.0, 0.0),
+    (0.0, 0.0, 3.0),
     (12.0, 0.0, 3.0),
     (30.0, 0.0, 3.0),
     (30.0, 20.0, 3.0),

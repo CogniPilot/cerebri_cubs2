@@ -246,7 +246,7 @@ model Cubs2PatternMission
       cruiseSpeed = 4.0,
       waypointSwitchingDistance = 3.0,
       waypoints = [
-        0.0,  0.0, 0.0;
+        0.0,  0.0, 3.0;
         12.0, 0.0, 3.0;
         30.0, 0.0, 3.0;
         30.0, 20.0, 3.0;
@@ -256,7 +256,10 @@ model Cubs2PatternMission
       ]
     );
 
-  Cubs2Plant vehicle;
+  Cubs2Plant vehicle(
+    p_start = {0.0, 0.0, 3.0},
+    v_b_start = {4.0, 0.0, 0.0}
+  );
   Cubs2InnerLoop innerLoop;
   FixedWingOuterLoop outerLoop(vehicle = vehicleParams, route = patternRoute);
 
@@ -281,14 +284,18 @@ protected
 
 algorithm
   when sample(0.0, 0.02) then
-    if outerLoop.currentWaypoint < pre(previousWaypoint) then
+    if not pre(landing)
+       and outerLoop.airborne
+       and vehicle.position[3] > 2.0
+       and pre(previousWaypoint) == 6
+       and outerLoop.currentWaypoint == 1 then
       lapCount := pre(lapCount) + 1;
     else
       lapCount := pre(lapCount);
     end if;
 
     previousWaypoint := outerLoop.currentWaypoint;
-    landing := lapCount >= 2;
+    landing := pre(landing) or lapCount >= 2;
   end when;
 
 equation
