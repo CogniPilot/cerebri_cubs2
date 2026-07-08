@@ -96,16 +96,28 @@ model Cubs2AltitudeHold
   parameter VehicleParameters vehicleParams =
     VehicleParameters(mass = 0.065, thrustMax = 0.30,
                       trimThrust = 0.10, envelopeDrag = 0.07);
-  parameter TecsParameters tecsParams = TecsParameters();
-  parameter AttitudeParameters attitudeParams = AttitudeParameters();
+  parameter RouteParameters straightRoute =
+    RouteParameters(
+      nSegments = 6,
+      cruiseSpeed = 4.0,
+      waypointSwitchingDistance = 3.0,
+      waypoints = [
+        0.0,   0.0, 3.0;
+        30.0,  0.0, 3.0;
+        60.0,  0.0, 3.0;
+        90.0,  0.0, 3.0;
+        120.0, 0.0, 3.0;
+        150.0, 0.0, 3.0;
+        180.0, 0.0, 3.0
+      ]
+    );
 
   Cubs2Plant vehicle(
     p_start = {0.0, 0.0, targetAltitude_m},
     v_b_start = {4.0, 0.0, 0.0}
   );
   Cubs2InnerLoop innerLoop;
-  StateEstimator estimator;
-  TECSController tecs(vehicle = vehicleParams, tecs = tecsParams);
+  FixedWingOuterLoop outerLoop(vehicle = vehicleParams, route = straightRoute);
 
   output Real time_s;
   output Real x_m;
@@ -118,42 +130,18 @@ model Cubs2AltitudeHold
 
 protected
   Real euler_rad[3];
-  Real speedSetpoint(unit = "m/s");
-  Real flightPathAngleSetpoint(unit = "rad");
-  Real accelerationSetpoint(unit = "m/s2");
 
 equation
   euler_rad = controllerEulerFromQuat(vehicle.quat);
 
-  estimator.position_m = vehicle.position;
-  estimator.euler_rad = euler_rad;
-
-  speedSetpoint = 4.0;
-  flightPathAngleSetpoint =
-    scenarioClip(atan2(2.0 * (targetAltitude_m - estimator.estimate.position_m[3]),
-                       8.0),
-                 -0.12,
-                 0.12);
-  accelerationSetpoint = 1.0 * (speedSetpoint - estimator.estimate.speed);
-
-  tecs.enabled = true;
-  tecs.setpoints.speed = speedSetpoint;
-  tecs.setpoints.flightPathAngle = flightPathAngleSetpoint;
-  tecs.setpoints.heading = 0.0;
-  tecs.setpoints.acceleration = accelerationSetpoint;
-  tecs.flightPathAngleEstimate = estimator.estimate.flightPathAngle;
-  tecs.accelerationEstimate_m_s2 = estimator.estimate.acceleration_m_s2;
+  outerLoop.position_m = vehicle.position;
+  outerLoop.euler_rad = euler_rad;
 
   innerLoop.armed = 1.0;
-  innerLoop.stick_roll = 0.0;
-  innerLoop.stick_pitch =
-    scenarioClip(attitudeParams.trimElevator
-                 + attitudeParams.pitchCommandToElevatorGain * tecs.pitchCommand,
-                 -1.0,
-                 1.0);
-  innerLoop.stick_yaw = 0.0;
-  innerLoop.stick_throttle =
-    scenarioClip(tecs.thrustCommand / vehicleParams.thrustMax, 0.0, 1.0);
+  innerLoop.stick_roll = outerLoop.aileron;
+  innerLoop.stick_pitch = outerLoop.elevator;
+  innerLoop.stick_yaw = outerLoop.rudder;
+  innerLoop.stick_throttle = outerLoop.throttle;
   innerLoop.gyro = vehicle.gyro;
   innerLoop.up_body = vehicle.up_body;
   innerLoop.airspeed = vehicle.airspeed;
@@ -167,7 +155,7 @@ equation
   x_m = vehicle.position[1];
   y_m = vehicle.position[2];
   z_m = vehicle.position[3];
-  altitude_error_m = targetAltitude_m - z_m;
+  altitude_error_m = outerLoop.guidance.pathAltitude - z_m;
   airspeed_m_s = vehicle.airspeed;
   pitch_cmd = innerLoop.stick_pitch;
   throttle_cmd = innerLoop.stick_throttle;
@@ -180,6 +168,21 @@ model Cubs2HeadingHold
   parameter VehicleParameters vehicleParams =
     VehicleParameters(mass = 0.065, thrustMax = 0.30,
                       trimThrust = 0.10, envelopeDrag = 0.07);
+  parameter RouteParameters straightRoute =
+    RouteParameters(
+      nSegments = 6,
+      cruiseSpeed = targetSpeed_m_s,
+      waypointSwitchingDistance = 3.0,
+      waypoints = [
+        0.0,   0.0, targetAltitude_m;
+        30.0,  0.0, targetAltitude_m;
+        60.0,  0.0, targetAltitude_m;
+        90.0,  0.0, targetAltitude_m;
+        120.0, 0.0, targetAltitude_m;
+        150.0, 0.0, targetAltitude_m;
+        180.0, 0.0, targetAltitude_m
+      ]
+    );
 
   Cubs2Plant vehicle(
     p_start = {0.0, 0.0, targetAltitude_m},
@@ -187,9 +190,7 @@ model Cubs2HeadingHold
     q_start = {0.9689124217106447, 0.0, 0.0, -0.24740395925452294}
   );
   Cubs2InnerLoop innerLoop;
-  StateEstimator estimator;
-  TECSController tecs(vehicle = vehicleParams);
-  AttitudeController attitude(vehicle = vehicleParams);
+  FixedWingOuterLoop outerLoop(vehicle = vehicleParams, route = straightRoute);
 
   output Real time_s;
   output Real x_m;
@@ -203,43 +204,18 @@ model Cubs2HeadingHold
 
 protected
   Real euler_rad[3];
-  Real flightPathAngleSetpoint(unit = "rad");
-  Real accelerationSetpoint(unit = "m/s2");
 
 equation
   euler_rad = controllerEulerFromQuat(vehicle.quat);
 
-  estimator.position_m = vehicle.position;
-  estimator.euler_rad = euler_rad;
-
-  flightPathAngleSetpoint =
-    scenarioClip(atan2(2.0 * (targetAltitude_m - estimator.estimate.position_m[3]), 8.0),
-                 -0.12,
-                 0.12);
-  accelerationSetpoint = 1.0 * (targetSpeed_m_s - estimator.estimate.speed);
-
-  tecs.enabled = true;
-  tecs.setpoints.speed = targetSpeed_m_s;
-  tecs.setpoints.flightPathAngle = flightPathAngleSetpoint;
-  tecs.setpoints.heading = targetHeading_rad;
-  tecs.setpoints.acceleration = accelerationSetpoint;
-  tecs.flightPathAngleEstimate = estimator.estimate.flightPathAngle;
-  tecs.accelerationEstimate_m_s2 = estimator.estimate.acceleration_m_s2;
-
-  attitude.airborne = true;
-  attitude.setpoints.speed = targetSpeed_m_s;
-  attitude.setpoints.flightPathAngle = flightPathAngleSetpoint;
-  attitude.setpoints.heading = targetHeading_rad;
-  attitude.setpoints.acceleration = accelerationSetpoint;
-  attitude.estimate = estimator.estimate;
-  attitude.tecsPitchCommand = tecs.pitchCommand;
-  attitude.tecsThrustCommand = tecs.thrustCommand;
+  outerLoop.position_m = vehicle.position;
+  outerLoop.euler_rad = euler_rad;
 
   innerLoop.armed = 1.0;
-  innerLoop.stick_roll = attitude.aileron;
-  innerLoop.stick_pitch = attitude.elevator;
-  innerLoop.stick_yaw = attitude.rudder;
-  innerLoop.stick_throttle = attitude.throttle;
+  innerLoop.stick_roll = outerLoop.aileron;
+  innerLoop.stick_pitch = outerLoop.elevator;
+  innerLoop.stick_yaw = outerLoop.rudder;
+  innerLoop.stick_throttle = outerLoop.throttle;
   innerLoop.gyro = vehicle.gyro;
   innerLoop.up_body = vehicle.up_body;
   innerLoop.airspeed = vehicle.airspeed;
@@ -253,10 +229,10 @@ equation
   x_m = vehicle.position[1];
   y_m = vehicle.position[2];
   z_m = vehicle.position[3];
-  heading_error_rad = scenarioWrapAngle(targetHeading_rad - euler_rad[3]);
-  roll_cmd = attitude.aileron;
-  pitch_cmd = attitude.elevator;
-  throttle_cmd = attitude.throttle;
+  heading_error_rad = scenarioWrapAngle(outerLoop.desiredHeading - euler_rad[3]);
+  roll_cmd = innerLoop.stick_roll;
+  pitch_cmd = innerLoop.stick_pitch;
+  throttle_cmd = innerLoop.stick_throttle;
   airspeed_m_s = vehicle.airspeed;
 end Cubs2HeadingHold;
 
@@ -270,7 +246,7 @@ model Cubs2PatternMission
       cruiseSpeed = 4.0,
       waypointSwitchingDistance = 3.0,
       waypoints = [
-        0.0,  0.0, 0.0;
+        0.0,  0.0, 3.0;
         12.0, 0.0, 3.0;
         30.0, 0.0, 3.0;
         30.0, 20.0, 3.0;
@@ -280,7 +256,10 @@ model Cubs2PatternMission
       ]
     );
 
-  Cubs2Plant vehicle;
+  Cubs2Plant vehicle(
+    p_start = {0.0, 0.0, 3.0},
+    v_b_start = {4.0, 0.0, 0.0}
+  );
   Cubs2InnerLoop innerLoop;
   FixedWingOuterLoop outerLoop(vehicle = vehicleParams, route = patternRoute);
 
@@ -305,14 +284,18 @@ protected
 
 algorithm
   when sample(0.0, 0.02) then
-    if outerLoop.currentWaypoint < pre(previousWaypoint) then
+    if not pre(landing)
+       and outerLoop.airborne
+       and vehicle.position[3] > 2.0
+       and pre(previousWaypoint) == 6
+       and outerLoop.currentWaypoint == 1 then
       lapCount := pre(lapCount) + 1;
     else
       lapCount := pre(lapCount);
     end if;
 
     previousWaypoint := outerLoop.currentWaypoint;
-    landing := lapCount >= 2;
+    landing := pre(landing) or lapCount >= 2;
   end when;
 
 equation

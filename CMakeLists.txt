@@ -38,22 +38,26 @@ if(TARGET native_simulator AND CMAKE_C_COMPILER_ID STREQUAL "GNU" AND NOT CONFIG
   target_link_options(native_simulator INTERFACE -Wl,--no-warn-search-mismatch)
 endif()
 
-set(CUBS2_RUMOCA_EXECUTABLE "" CACHE FILEPATH
-  "Rumoca CLI executable used for Modelica code generation"
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+set(CUBS2_RUMOCA_PYTHON "" CACHE FILEPATH
+  "Python interpreter with the Rumoca binding used for Modelica code generation"
 )
 
-if(NOT CUBS2_RUMOCA_EXECUTABLE
-   AND DEFINED ENV{CUBS2_RUMOCA_EXECUTABLE}
-   AND NOT "$ENV{CUBS2_RUMOCA_EXECUTABLE}" STREQUAL "")
-  set(CUBS2_RUMOCA_EXECUTABLE "$ENV{CUBS2_RUMOCA_EXECUTABLE}" CACHE FILEPATH
-    "Rumoca CLI executable used for Modelica code generation"
+if(NOT CUBS2_RUMOCA_PYTHON
+   AND DEFINED ENV{CUBS2_RUMOCA_PYTHON}
+   AND NOT "$ENV{CUBS2_RUMOCA_PYTHON}" STREQUAL "")
+  set(CUBS2_RUMOCA_PYTHON "$ENV{CUBS2_RUMOCA_PYTHON}" CACHE FILEPATH
+    "Python interpreter with the Rumoca binding used for Modelica code generation"
     FORCE
   )
 endif()
 
-if(NOT CUBS2_RUMOCA_EXECUTABLE)
-  unset(CUBS2_RUMOCA_EXECUTABLE CACHE)
-  find_program(CUBS2_RUMOCA_EXECUTABLE NAMES rumoca REQUIRED)
+if(NOT CUBS2_RUMOCA_PYTHON)
+  set(CUBS2_RUMOCA_PYTHON "${Python3_EXECUTABLE}" CACHE FILEPATH
+    "Python interpreter with the Rumoca binding used for Modelica code generation"
+    FORCE
+  )
 endif()
 
 set(CUBS2_RUMOCA_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated/rumoca)
@@ -63,8 +67,8 @@ set(CUBS2_EFMI_CONTROL_INCLUDE_DIRS)
 
 function(cubs2_add_efmi_control_model model_name)
   set(_model_file ${CMAKE_CURRENT_SOURCE_DIR}/src/${model_name}.mo)
+  set(_codegen_script ${CMAKE_CURRENT_SOURCE_DIR}/scripts/rumoca_codegen.py)
   set(_efmu_dir ${CUBS2_RUMOCA_GENERATED_DIR}/${model_name})
-  set(_efmu_file ${CUBS2_RUMOCA_GENERATED_DIR}/${model_name}.efmu)
   set(_stamp ${CUBS2_RUMOCA_GENERATED_DIR}/${model_name}.galec-production.stamp)
   set(_source ${_efmu_dir}/ProductionCode/${model_name}.c)
   set(_header ${_efmu_dir}/ProductionCode/${model_name}.h)
@@ -72,23 +76,24 @@ function(cubs2_add_efmi_control_model model_name)
   add_custom_command(
     OUTPUT ${_stamp}
     BYPRODUCTS
-      ${_efmu_file}
       ${_efmu_dir}/AlgorithmCode/${model_name}.alg
       ${_efmu_dir}/AlgorithmCode/manifest.xml
       ${_source}
       ${_header}
       ${_efmu_dir}/ProductionCode/manifest.xml
       ${_efmu_dir}/__content.xml
-    COMMAND ${CMAKE_COMMAND} -E rm -rf "${_efmu_dir}" "${_efmu_file}"
-    COMMAND "${CUBS2_RUMOCA_EXECUTABLE}"
-            compile "${_model_file}"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${_efmu_dir}"
+    COMMAND "${CUBS2_RUMOCA_PYTHON}"
+            "${_codegen_script}"
+            "${_model_file}"
             --model "${model_name}"
-            --target galec-production
-            --output "${CUBS2_RUMOCA_GENERATED_DIR}"
+            --target "galec-production"
+            --output "${_efmu_dir}"
     COMMAND ${CMAKE_COMMAND} -E touch "${_stamp}"
     DEPENDS
       ${_model_file}
-    COMMENT "Generating ${model_name} eFMI Production Code with Rumoca CLI"
+      ${_codegen_script}
+    COMMENT "Generating ${model_name} eFMI Production Code with Rumoca Python binding"
     VERBATIM
   )
 

@@ -1,0 +1,42 @@
+namespace cubs2.sil;
+
+// Rumoca-facing scalar mocap sample. The test harness translates this into
+// the real Synapse MocapFrame table on synapse/v1/topic/mocap_frame.
+table MocapSample {
+  timestamp_us:ulong;
+  frame_number:uint;
+  x_m:float;
+  y_m:float;
+  z_m:float;
+  qw:float;
+  qx:float;
+  qy:float;
+  qz:float;
+  tracking_valid:bool;
+}
+
+// Rumoca-facing scalar mirror of the fixed-layout Synapse PwmSignalOutputsData
+// payload published by native_sim.
+table PwmOutputs {
+  timestamp_us:ulong;
+  active_mask:uint;
+  port:ubyte;
+  output0_us:ushort;
+  output1_us:ushort;
+  output2_us:ushort;
+  output3_us:ushort;
+  output4_us:ushort;
+  output5_us:ushort;
+  output6_us:ushort;
+  output7_us:ushort;
+  output8_us:ushort;
+  output9_us:ushort;
+  output10_us:ushort;
+  output11_us:ushort;
+  output12_us:ushort;
+  output13_us:ushort;
+  output14_us:ushort;
+  output15_us:ushort;
+}
+
+root_type MocapSample;
