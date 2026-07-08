@@ -11,6 +11,9 @@ import tomllib
 from typing import Any, Callable
 
 
+SCENARIO_RUNNER_UNAVAILABLE_EXIT = 77
+
+
 def call_with_supported_kwargs(fn: Callable[..., Any], scenario: Path) -> Any:
     attempts = [
         ((), {"config": str(scenario)}),
@@ -86,14 +89,33 @@ def find_scenario_runner(rm: Any) -> Callable[[Path], Any]:
     )
 
 
-def run_batch_fallback(rm: Any, scenario: Path) -> int:
-    data = tomllib.loads(scenario.read_text(encoding="utf-8"))
+def scenario_data(scenario: Path) -> dict[str, Any]:
+    return tomllib.loads(scenario.read_text(encoding="utf-8"))
+
+
+def requires_interactive_runner(data: dict[str, Any]) -> bool:
     sim = data.get("sim", {})
-    if sim.get("mode") == "lockstep" or data.get("transport") is not None:
-        raise AttributeError(
+    return sim.get("mode") == "lockstep" or "lockstep" in data or data.get("transport") is not None
+
+
+def missing_runner_message(data: dict[str, Any]) -> str:
+    if requires_interactive_runner(data):
+        return (
             "this scenario uses interactive transport/lockstep settings and "
             "requires Rumoca's Python scenario runner"
         )
+    return (
+        "the installed Rumoca Python binding does not expose a scenario runner; "
+        "falling back to batch simulation is possible only for non-interactive scenarios"
+    )
+
+
+def run_batch_fallback(rm: Any, scenario: Path) -> int:
+    data = scenario_data(scenario)
+    sim = data.get("sim", {})
+    if requires_interactive_runner(data):
+        print(f"error: {missing_runner_message(data)}", file=sys.stderr)
+        return SCENARIO_RUNNER_UNAVAILABLE_EXIT
 
     _session, model, config = rm.Session.from_scenario(str(scenario))
     t_end = float(sim.get("t_end", 1.0))
@@ -119,7 +141,13 @@ def run_batch_fallback(rm: Any, scenario: Path) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("-c", "--config", required=True, type=Path)
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="only verify that the installed binding can run this scenario",
+    )
     args = parser.parse_args()
+    data = scenario_data(args.config)
 
     try:
         import rumoca as rm
@@ -129,8 +157,15 @@ def main() -> int:
     try:
         runner = find_scenario_runner(rm)
     except AttributeError:
+        if args.check_only:
+            if requires_interactive_runner(data):
+                print(f"error: {missing_runner_message(data)}", file=sys.stderr)
+                return SCENARIO_RUNNER_UNAVAILABLE_EXIT
+            return 0
         return run_batch_fallback(rm, args.config)
 
+    if args.check_only:
+        return 0
     runner(args.config)
     return 0
 

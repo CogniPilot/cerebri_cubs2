@@ -108,6 +108,11 @@ FlatBuffer topics and real Synapse topics, then writes CSV, PNG, Markdown, and
 HTML artifacts that grade route laps, altitude, velocity, bank, pitch, and
 crosstrack tracking.
 
+This native-sim path requires a Rumoca Python release that exposes the
+interactive TOML scenario runner. Rumoca `0.9.13` can load scenario TOMLs for
+batch `model.simulate(...)`, but does not expose the lockstep/transport runner
+needed for this test yet.
+
 The same traffic is inspectable from another terminal while the test is
 running:
 

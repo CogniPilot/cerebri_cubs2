@@ -6,6 +6,72 @@ Rumoca Python binding simulation is extremely slow for the CUBS2 full flight SIL
 
 Observed with Rumoca `0.9.13` from the Nix-pinned Python wheel.
 
+## Interactive Scenario Runner Binding Gap
+
+The CUBS2 native-sim SIL scenario cannot currently run through the Python
+binding because Rumoca `0.9.13` does not expose an interactive TOML scenario
+runner. The installed module exposes:
+
+```text
+rumoca.version() -> 0.9.13
+rumoca.Session.from_scenario(path)
+model.simulate(...)
+model.codegen(...)
+```
+
+It does not expose a Python function/class such as:
+
+```text
+rumoca.run_scenario(path)
+rumoca.simulate_scenario(path)
+rumoca.Scenario.from_file(path).run()
+rumoca.Session.run_scenario(path)
+```
+
+Native SIL scenario requiring that API:
+
+```text
+/home/jgoppert/git/cerebri_cubs2/tests/zephyr/rumoca-scenario.native-sim.toml
+```
+
+Native SIL Modelica model:
+
+```text
+/home/jgoppert/git/cerebri_cubs2/tests/zephyr/Cubs2NativeSimSIL.mo
+```
+
+Native SIL schema:
+
+```text
+/home/jgoppert/git/cerebri_cubs2/tests/zephyr/native_sil_io.fbs
+```
+
+Source roots used by the native SIL scenario:
+
+```text
+/home/jgoppert/git/cerebri_cubs2/models/vendor/CMM-v0.0.2
+/home/jgoppert/git/cerebri_cubs2/models/plant
+```
+
+The scenario TOML owns the lockstep timing, Zenoh transport, FlatBuffer schema,
+publish/subscribe routes, signal mapping, debug log capture, model selection,
+physics, and solver setup. The CUBS2 side intentionally does not implement
+lockstep, transport, or simulation in handwritten Python; it only launches the
+Zephyr app and bridges real Synapse topics while Rumoca should run the scenario.
+
+Requested binding API behavior:
+
+1. Accept a scenario TOML path from Python and run the same interactive
+   lockstep/transport behavior exposed by Rumoca's scenario system.
+2. Honor `[transport.zenoh]`, `[lockstep]`, `[schema]`, `[publish]`,
+   `[subscribe]`, `[send]`, `[receive]`, `[signals.send]`, and `[debug_log]`
+   from the TOML.
+3. Return a process-style status or raise structured Python exceptions so CI can
+   distinguish configuration errors, transport errors, simulation failures, and
+   failed model checks.
+4. Keep batch `Session.from_scenario(...); model.simulate(...)` available for
+   non-interactive scenarios.
+
 ## Repository
 
 Repository root:
