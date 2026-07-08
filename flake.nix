@@ -21,33 +21,50 @@
       defaultBoard = "mr_vmu_tropic";
       defaultNativeSimBoard = "native_sim";
       defaultNativeSim64Board = "native_sim/native/64";
-      rumocaVersion = "0.9.13";
+      rumocaVersion = "0.9.16";
       mkRumocaPythonPackage =
         pkgs:
         let
-          assets = {
-            x86_64-linux = {
-              name = "rumoca-${rumocaVersion}-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl";
-              hash = "sha256-ZkDYqZv1I2UmvzCTVlsGK/O0CIwO1RG/C3hCmrvggGI=";
-            };
-            aarch64-linux = {
-              name = "rumoca-${rumocaVersion}-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl";
-              hash = "sha256-SqkzmJfOCCskoBh9PBCegeB3yGQcLjeZZM8p8LLDYVU=";
-            };
+          src = pkgs.fetchPypi {
+            pname = "rumoca";
+            version = rumocaVersion;
+            hash = "sha256-pWJ5B7RHLQcwV3FPzQo/TuRkBL39Q/M9DP8kob6Xy1w=";
           };
-          asset =
-            assets.${pkgs.stdenv.hostPlatform.system}
-              or (throw "unsupported Rumoca Python wheel platform: ${pkgs.stdenv.hostPlatform.system}");
         in
         pkgs.python3Packages.buildPythonPackage {
           pname = "rumoca";
           version = rumocaVersion;
-          format = "wheel";
+          pyproject = true;
 
-          src = pkgs.fetchurl {
-            url = "https://github.com/CogniPilot/rumoca/releases/download/v${rumocaVersion}/${asset.name}";
-            inherit (asset) hash;
+          inherit src;
+          sourceRoot = "rumoca-${rumocaVersion}";
+          cargoRoot = ".";
+
+          cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
+            inherit src;
+            sourceRoot = "rumoca-${rumocaVersion}";
+            cargoRoot = ".";
+            name = "rumoca-${rumocaVersion}-cargo-vendor";
+            hash = "sha256-TzZqaAc5+tiZbam5shvN+VRSh4UI8PUOZ4QaV/CUIYg=";
           };
+
+          nativeBuildInputs = [
+            pkgs.pkg-config
+            pkgs.rustfmt
+            pkgs.rustPlatform.cargoSetupHook
+            pkgs.rustPlatform.maturinBuildHook
+          ];
+
+          postPatch = ''
+            chmod -R u+w .
+          '';
+
+          buildInputs = [
+            pkgs.udev
+          ];
+
+          env.CARGO_TARGET_DIR = "./target";
+          LIBCLANG_PATH = "${pkgs.llvmPackages.libclang.lib}/lib";
 
           doCheck = false;
           pythonImportsCheck = [ "rumoca" ];
@@ -56,7 +73,7 @@
             description = "Rumoca Modelica compiler Python binding";
             homepage = "https://github.com/CogniPilot/rumoca";
             license = lib.licenses.asl20;
-            platforms = builtins.attrNames assets;
+            platforms = supportedSystems;
           };
         };
       mkPythonEnv =
@@ -529,7 +546,25 @@
                 exit 1
               fi
 
-              exec "${pythonEnv}/bin/python" scripts/rumoca_check.py "$model"
+              exec "${pythonEnv}/bin/python" - "$model" <<'PY'
+              from pathlib import Path
+              import sys
+
+              import rumoca as rum
+
+              model = Path(sys.argv[1])
+              source = model.read_text(encoding="utf-8")
+              formatted = rum.format(source, filename=str(model))
+              if formatted != source:
+                  print(f"error: Modelica formatting differs: {model}", file=sys.stderr)
+                  raise SystemExit(1)
+
+              try:
+                  rum.Session().load(str(model), model=model.stem)
+              except rum.RumocaError as exc:
+                  print(f"{model}: error: {exc}", file=sys.stderr)
+                  raise SystemExit(1) from exc
+              PY
             '';
           };
 

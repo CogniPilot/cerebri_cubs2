@@ -101,17 +101,12 @@ nix run .#native-sim-sil-test
 
 The native-sim SIL runner starts `zenohd` on `udp/127.0.0.1:7447`, launches
 `build-native_sim/zephyr/zephyr.exe`, and passes
-`tests/zephyr/rumoca-scenario.native-sim.toml` to the Rumoca Python scenario
-runner. The TOML owns the lockstep, Zenoh, schema, publish/subscribe, debug log,
-physics, and solver setup. The bridge translates between the Rumoca-facing
-FlatBuffer topics and real Synapse topics, then writes CSV, PNG, Markdown, and
-HTML artifacts that grade route laps, altitude, velocity, bank, pitch, and
-crosstrack tracking.
-
-This native-sim path requires a Rumoca Python release that exposes the
-interactive TOML scenario runner. Rumoca `0.9.13` can load scenario TOMLs for
-batch `model.simulate(...)`, but does not expose the lockstep/transport runner
-needed for this test yet.
+`tests/zephyr/rumoca-scenario.native-sim.toml` to the Rumoca Python
+`Session.run_scenario(...)` path. The TOML owns the lockstep, Zenoh, schema,
+publish/subscribe, debug log, physics, and solver setup. The bridge translates
+between the Rumoca-facing FlatBuffer topics and real Synapse topics, then writes
+CSV, PNG, Markdown, and HTML artifacts that grade route laps, altitude,
+velocity, bank, pitch, and crosstrack tracking.
 
 The same traffic is inspectable from another terminal while the test is
 running:

@@ -37,10 +37,15 @@ SYNAPSE_PWM_TOPIC = "synapse/v1/topic/pwm_signal_outputs"
 SYNAPSE_ATTITUDE_COMMAND_TOPIC = "synapse/v1/topic/attitude_command"
 RUMOCA_MOCAP_TOPIC = "cubs2/sil/mocap_sample"
 RUMOCA_PWM_TOPIC = "cubs2/sil/pwm_outputs"
-RUMOCA_SCENARIO_RUNNER_UNAVAILABLE_EXIT = 77
 
 NATIVE_IO_SCHEMA = ROOT / "tests" / "zephyr" / "native_sil_io.fbs"
 DEFAULT_SCENARIO = ROOT / "tests" / "zephyr" / "rumoca-scenario.native-sim.toml"
+RUMOCA_SESSION_CHECK_CODE = (
+    "import rumoca as rum; "
+    "runner = getattr(rum.Session(), 'run_scenario', None); "
+    "assert callable(runner), 'Rumoca Python Session.run_scenario is required'"
+)
+RUMOCA_RUN_SCENARIO_CODE = "import sys; import rumoca as rum; rum.Session().run_scenario(sys.argv[1])"
 
 PWM_STRUCT = struct.Struct("<QIBx16H2x")
 ATTITUDE_COMMAND_STRUCT = struct.Struct("<Q4f3ffB7x")
@@ -108,12 +113,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--startup-timeout-s", type=float, default=6.0)
     parser.add_argument("--shutdown-timeout-s", type=float, default=4.0)
-    parser.add_argument(
-        "--allow-missing-rumoca-scenario-runner",
-        action="store_true",
-        default=os.environ.get("CUBS2_ALLOW_MISSING_RUMOCA_SCENARIO_RUNNER") == "1",
-        help="write a skipped report when the binding lacks the interactive TOML runner",
-    )
     return parser.parse_args()
 
 
@@ -200,26 +199,28 @@ def generate_bfbs(artifact_dir: Path) -> Path:
     return bfbs
 
 
-def scenario_with_duration(scenario: Path, artifact_dir: Path, t_end: float | None) -> Path:
-    if t_end is None:
-        return scenario
-
+def scenario_for_run(scenario: Path, artifact_dir: Path, t_end: float | None) -> Path:
     text = scenario.read_text()
-    updated, count = re.subn(r"(?m)^t_end\s*=\s*[0-9.]+", f"t_end = {t_end}", text, count=1)
-    if count != 1:
-        raise RuntimeError(f"could not override t_end in {scenario}")
-    updated = updated.replace(
-        'file = "Cubs2NativeSimSIL.mo"',
-        f'file = "{(ROOT / "tests" / "zephyr" / "Cubs2NativeSimSIL.mo").as_posix()}"',
-    )
-    updated = updated.replace(
-        '"../../models/vendor/CMM-v0.0.2"',
-        f'"{(ROOT / "models" / "vendor" / "CMM-v0.0.2").as_posix()}"',
-    )
-    updated = updated.replace(
-        '"../../models/plant"',
-        f'"{(ROOT / "models" / "plant").as_posix()}"',
-    )
+    replacements = {
+        'file = "Cubs2NativeSimSIL.mo"': f'file = "{(ROOT / "tests" / "zephyr" / "Cubs2NativeSimSIL.mo").as_posix()}"',
+        '"../../models/vendor/CMM-v0.0.2"': f'"{(ROOT / "models" / "vendor" / "CMM-v0.0.2").as_posix()}"',
+        '"../../models/plant"': f'"{(ROOT / "models" / "plant").as_posix()}"',
+        'output = "artifacts/native-sim-sil/native-sim-rumoca.html"': f'output = "{(artifact_dir / "native-sim-rumoca.html").as_posix()}"',
+        'bfbs = ["artifacts/native-sim-sil/native_sil_io.bfbs"]': f'bfbs = ["{(artifact_dir / "native_sil_io.bfbs").as_posix()}"]',
+        'path = "artifacts/native-sim-sil/native-sim-plant.csv"': f'path = "{(artifact_dir / "native-sim-plant.csv").as_posix()}"',
+    }
+
+    updated = text
+    for old, new in replacements.items():
+        if old not in updated:
+            raise RuntimeError(f"could not rewrite {old!r} in {scenario}")
+        updated = updated.replace(old, new, 1)
+
+    if t_end is not None:
+        updated, count = re.subn(r"(?m)^t_end\s*=\s*[0-9.]+", f"t_end = {t_end}", updated, count=1)
+        if count != 1:
+            raise RuntimeError(f"could not override t_end in {scenario}")
+
     path = artifact_dir / scenario.name
     path.write_text(updated)
     return path
@@ -899,34 +900,6 @@ def write_reports(
     (artifact_dir / "native-sim-report.html").write_text("\n".join(html_lines))
 
 
-def write_skip_reports(artifact_dir: Path, detail: str) -> None:
-    summary = artifact_dir / "native-sim-summary.md"
-    lines = [
-        "# CUBS2 Zephyr Native SIL",
-        "",
-        "Status: SKIPPED",
-        "",
-        detail,
-        "",
-        "The Zephyr `native_sim` executable build completed before this runner was invoked, but the SIL mission was not flown because the installed Rumoca Python binding cannot run the interactive scenario TOML.",
-        "",
-    ]
-    summary.write_text("\n".join(lines))
-
-    html_lines = [
-        "<!doctype html><html><head><meta charset='utf-8'>",
-        "<title>CUBS2 Zephyr Native SIL</title>",
-        "<style>body{font-family:sans-serif;margin:2rem;max-width:900px} code{background:#eee;padding:.1rem .2rem}</style>",
-        "</head><body>",
-        "<h1>CUBS2 Zephyr Native SIL</h1>",
-        "<h2>Status: SKIPPED</h2>",
-        f"<p>{html.escape(detail)}</p>",
-        "<p>The Zephyr <code>native_sim</code> executable build completed before this runner was invoked, but the SIL mission was not flown because the installed Rumoca Python binding cannot run the interactive scenario TOML.</p>",
-        "</body></html>",
-    ]
-    (artifact_dir / "native-sim-report.html").write_text("\n".join(html_lines))
-
-
 def main() -> int:
     args = parse_args()
     artifact_dir = (ROOT / args.artifacts).resolve() if not Path(args.artifacts).is_absolute() else Path(args.artifacts)
@@ -946,47 +919,20 @@ def main() -> int:
 
     router_log = artifact_dir / "zenohd.log"
     sim_log = artifact_dir / "native-sim.log"
-    rumoca_log = artifact_dir / "rumoca-python.log"
+    rumoca_log = artifact_dir / "rumoca.log"
     plant_csv = artifact_dir / "native-sim-plant.csv"
     mocap_csv = artifact_dir / "native-sim-mocap.csv"
     pwm_csv = artifact_dir / "native-sim-pwm.csv"
     attitude_csv = artifact_dir / "native-sim-attitude-command.csv"
     merged_csv = artifact_dir / "native-sim-flight.csv"
 
-    scenario_to_run = scenario_with_duration(scenario, artifact_dir, args.t_end)
-    rumoca_cmd = [
-        sys.executable,
-        os.fspath(ROOT / "scripts" / "rumoca_scenario.py"),
-        "-c",
-        os.fspath(scenario_to_run),
-    ]
-
-    if args.allow_missing_rumoca_scenario_runner:
-        check_cmd = [*rumoca_cmd, "--check-only"]
-        print("+", " ".join(check_cmd), flush=True)
-        check = subprocess.run(
-            check_cmd,
-            cwd=ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            check=False,
-        )
-        if check.returncode == RUMOCA_SCENARIO_RUNNER_UNAVAILABLE_EXIT:
-            rumoca_log.write_text(check.stdout)
-            detail = tail(rumoca_log, line_count=20)
-            write_skip_reports(artifact_dir, detail)
-            print(detail)
-            print(f"wrote {artifact_dir / 'native-sim-summary.md'}")
-            print(f"wrote {artifact_dir / 'native-sim-report.html'}")
-            return 0
-        if check.returncode != 0:
-            rumoca_log.write_text(check.stdout)
-            raise RuntimeError(f"Rumoca Python scenario runner preflight failed with status {check.returncode}")
+    scenario_to_run = scenario_for_run(scenario, artifact_dir, args.t_end)
+    rumoca_cmd = [sys.executable, "-c", RUMOCA_RUN_SCENARIO_CODE, os.fspath(scenario_to_run)]
+    run_checked([sys.executable, "-c", RUMOCA_SESSION_CHECK_CODE])
 
     router: subprocess.Popen[bytes] | None = None
     zephyr: subprocess.Popen[bytes] | None = None
-    rumoca_python: subprocess.Popen[bytes] | None = None
+    rumoca_process: subprocess.Popen[bytes] | None = None
     stop_bridge = threading.Event()
     bridge_log = BridgeLog(mocap_rows=[], pwm_rows=[], attitude_rows=[])
     bridge_thread: threading.Thread | None = None
@@ -1010,29 +956,18 @@ def main() -> int:
         )
         bridge_thread.start()
 
-        rumoca_python = start_process("rumoca-python", rumoca_cmd, rumoca_log)
+        rumoca_process = start_process("rumoca", rumoca_cmd, rumoca_log)
 
-        while rumoca_python.poll() is None:
+        while rumoca_process.poll() is None:
             require_running(router, router_log, "zenohd")
             require_running(zephyr, sim_log, "native_sim")
             if bridge_log.error is not None:
                 raise RuntimeError(f"native SIL bridge failed: {bridge_log.error}")
             time.sleep(0.1)
 
-        if (
-            rumoca_python.returncode == RUMOCA_SCENARIO_RUNNER_UNAVAILABLE_EXIT
-            and args.allow_missing_rumoca_scenario_runner
-        ):
-            detail = tail(rumoca_log, line_count=20)
-            write_skip_reports(artifact_dir, detail)
-            print(detail)
-            print(f"wrote {artifact_dir / 'native-sim-summary.md'}")
-            print(f"wrote {artifact_dir / 'native-sim-report.html'}")
-            return 0
-
-        if rumoca_python.returncode != 0:
+        if rumoca_process.returncode != 0:
             raise RuntimeError(
-                f"Rumoca Python scenario runner exited with status {rumoca_python.returncode}"
+                f"Rumoca scenario runner exited with status {rumoca_process.returncode}"
                 f"\n\n{tail(rumoca_log)}"
             )
 
@@ -1073,7 +1008,7 @@ def main() -> int:
         stop_bridge.set()
         if bridge_thread is not None and bridge_thread.is_alive():
             bridge_thread.join(timeout=args.shutdown_timeout_s)
-        stop_process(rumoca_python, args.shutdown_timeout_s)
+        stop_process(rumoca_process, args.shutdown_timeout_s)
         stop_process(zephyr, args.shutdown_timeout_s)
         stop_process(router, args.shutdown_timeout_s)
 
