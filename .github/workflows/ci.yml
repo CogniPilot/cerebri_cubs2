@@ -74,8 +74,6 @@ jobs:
 
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
-        with:
-          determinate: false
 
       - name: Prefer GitHub Nix cache
         run: |
@@ -125,8 +123,6 @@ jobs:
 
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
-        with:
-          determinate: false
 
       - name: Prefer GitHub Nix cache
         run: |
@@ -197,8 +193,6 @@ jobs:
 
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
-        with:
-          determinate: false
 
       - name: Prefer GitHub Nix cache
         run: |
@@ -265,8 +259,6 @@ jobs:
 
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
-        with:
-          determinate: false
 
       - name: Prefer GitHub Nix cache
         run: |
