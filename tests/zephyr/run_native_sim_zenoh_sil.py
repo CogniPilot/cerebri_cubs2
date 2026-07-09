@@ -116,6 +116,23 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--startup-timeout-s", type=float, default=6.0)
     parser.add_argument("--shutdown-timeout-s", type=float, default=4.0)
+    parser.add_argument(
+        "--lockstep-check-target-s",
+        type=float,
+        default=1.0,
+        help="lockstep advance target, in seconds, used for the native_sim boot-time regression",
+    )
+    parser.add_argument(
+        "--lockstep-check-tolerance-s",
+        type=float,
+        default=0.05,
+        help="allowed Zephyr timestamp error for the lockstep boot-time acknowledgement",
+    )
+    parser.add_argument(
+        "--lockstep-regression-only",
+        action="store_true",
+        help="run only the short native_sim lockstep timing regression and skip flight checks",
+    )
     return parser.parse_args()
 
 
@@ -374,6 +391,7 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
         latest_sim_time_s = 0.0
         odometry_forwarded = False
         control_forwarded = False
+        bridge_seq = 0
 
         while not stop.is_set():
             did_work = False
@@ -385,6 +403,8 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
                 odometry = decode_external_odometry(payload_bytes(sample))
                 odometry_row = external_odometry_row(odometry)
                 latest_sim_time_s = float(odometry_row["sim_time_s"])
+                bridge_seq += 1
+                odometry_row["bridge_seq"] = bridge_seq
                 session.put(
                     SYNAPSE_EXTERNAL_ODOMETRY_TOPIC,
                     fixed_struct_payload(odometry, ExternalOdometryData.SizeOf()),
@@ -398,6 +418,9 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
                 if sample is None:
                     break
                 row = decode_pwm_outputs(payload_bytes(sample), latest_sim_time_s)
+                bridge_seq += 1
+                row["bridge_seq"] = bridge_seq
+                row["lockstep_timestamp_us"] = int(round(latest_sim_time_s * 1_000_000.0))
                 real_control = int(row["output2_us"]) > 1100 or int(row["output6_us"]) > 1000
                 forward_to_plant = control_forwarded or (odometry_forwarded and real_control)
                 row["forwarded_to_plant"] = int(forward_to_plant)
@@ -411,7 +434,11 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
                 sample = attitude_subscriber.try_recv()
                 if sample is None:
                     break
-                logs.attitude_rows.append(decode_attitude_command(payload_bytes(sample), latest_sim_time_s))
+                row = decode_attitude_command(payload_bytes(sample), latest_sim_time_s)
+                bridge_seq += 1
+                row["bridge_seq"] = bridge_seq
+                row["lockstep_timestamp_us"] = int(round(latest_sim_time_s * 1_000_000.0))
+                logs.attitude_rows.append(row)
                 did_work = True
 
             if not did_work:
@@ -755,6 +782,105 @@ def flight_metrics(rows: list[dict[str, float]], logs: BridgeLog) -> dict[str, f
     }
 
 
+def lockstep_metrics(logs: BridgeLog, target_s: float, tolerance_s: float) -> dict[str, float | int]:
+    target_us = int(round(target_s * 1_000_000.0))
+    tolerance_us = int(round(tolerance_s * 1_000_000.0))
+    target_odometry = next(
+        (row for row in logs.odometry_rows if int(row["timestamp_us"]) >= target_us),
+        None,
+    )
+
+    metrics: dict[str, float | int] = {
+        "lockstep_target_s": target_s,
+        "lockstep_tolerance_s": tolerance_s,
+        "lockstep_target_us": target_us,
+        "lockstep_target_advance_seen": int(target_odometry is not None),
+        "lockstep_target_advance_bridge_seq": 0,
+        "lockstep_pre_target_pwm_samples": 0,
+        "lockstep_pre_target_max_boot_s": 0.0,
+        "lockstep_first_post_target_pwm_boot_s": 0.0,
+        "lockstep_ack_seen": 0,
+        "lockstep_ack_boot_s": 0.0,
+        "lockstep_ack_error_s": float("nan"),
+    }
+
+    if target_odometry is None:
+        return metrics
+
+    target_seq = int(target_odometry.get("bridge_seq", 0))
+    metrics["lockstep_target_advance_bridge_seq"] = target_seq
+
+    pre_target_pwm = [
+        row
+        for row in logs.pwm_rows
+        if int(row.get("bridge_seq", 0)) < target_seq
+        and float(row.get("sim_time_s", 0.0)) < target_s
+    ]
+    if pre_target_pwm:
+        max_boot_us = max(int(row["timestamp_us"]) for row in pre_target_pwm)
+        metrics["lockstep_pre_target_pwm_samples"] = len(pre_target_pwm)
+        metrics["lockstep_pre_target_max_boot_s"] = max_boot_us / 1_000_000.0
+
+    post_target_pwm = [
+        row
+        for row in logs.pwm_rows
+        if int(row.get("forwarded_to_plant", 0)) != 0
+        and int(row.get("bridge_seq", 0)) > target_seq
+    ]
+    if post_target_pwm:
+        metrics["lockstep_first_post_target_pwm_boot_s"] = (
+            int(post_target_pwm[0]["timestamp_us"]) / 1_000_000.0
+        )
+
+    ack = next(
+        (row for row in post_target_pwm if int(row["timestamp_us"]) >= target_us - tolerance_us),
+        None,
+    )
+    if ack is None:
+        return metrics
+
+    ack_us = int(ack["timestamp_us"])
+    metrics["lockstep_ack_seen"] = 1
+    metrics["lockstep_ack_boot_s"] = ack_us / 1_000_000.0
+    metrics["lockstep_ack_error_s"] = (ack_us - target_us) / 1_000_000.0
+    return metrics
+
+
+def run_lockstep_checks(metrics: dict[str, float | int]) -> list[tuple[str, bool, str]]:
+    target_s = float(metrics["lockstep_target_s"])
+    tolerance_s = float(metrics["lockstep_tolerance_s"])
+    ack_error_s = float(metrics["lockstep_ack_error_s"])
+    ack_error_ok = math.isfinite(ack_error_s) and abs(ack_error_s) <= tolerance_s
+    pre_target_max_boot_s = float(metrics["lockstep_pre_target_max_boot_s"])
+    pre_target_ok = pre_target_max_boot_s <= target_s + tolerance_s
+
+    return [
+        (
+            "lockstep target advance observed",
+            int(metrics["lockstep_target_advance_seen"]) != 0,
+            f"target {target_s:.3f} s",
+        ),
+        (
+            "lockstep pre-target boot bounded",
+            pre_target_ok,
+            (
+                f"max boot {pre_target_max_boot_s:.3f} s before target, "
+                f"tolerance {tolerance_s:.3f} s"
+            ),
+        ),
+        (
+            "lockstep ack received",
+            int(metrics["lockstep_ack_seen"]) != 0,
+            f"ack boot {float(metrics['lockstep_ack_boot_s']):.3f} s",
+        ),
+        (
+            "lockstep ack boot time",
+            ack_error_ok,
+            f"error {ack_error_s:.6f} s, tolerance {tolerance_s:.3f} s",
+        ),
+    ]
+
+
 def run_checks(metrics: dict[str, float | int]) -> list[tuple[str, str, str]]:
     def warn_if(ok: bool) -> str:
         return "PASS" if ok else "WARN"
@@ -796,6 +922,7 @@ def run_checks(metrics: dict[str, float | int]) -> list[tuple[str, str, str]]:
         ("bank bounded", float(metrics["max_abs_bank_deg"]) < 80.0, f"max abs {metrics['max_abs_bank_deg']:.1f} deg"),
         ("pitch bounded", float(metrics["max_abs_pitch_deg"]) < 60.0, f"max abs {metrics['max_abs_pitch_deg']:.1f} deg"),
     ]
+    checks.extend(run_lockstep_checks(metrics))
 
     rendered = []
     for name, status_or_ok, detail in checks:
@@ -860,7 +987,7 @@ def write_reports(
             "",
             "The native app currently publishes `attitude_command` with roll and heading command plus thrust; pitch is not commanded there, so pitch tracking is plotted against that zero attitude-command pitch while elevator response is shown separately.",
             "",
-            "`WARN` rows are flight-quality metrics retained in the artifact report; CI gates only the native-SIL smoke contract, transport, generated traces, and bounded-flight sanity checks.",
+            "`WARN` rows are flight-quality metrics retained in the artifact report; CI gates only the native-SIL smoke contract, lockstep timing, transport, generated traces, and bounded-flight sanity checks.",
             "",
             "Open `native-sim-report.html` or the PNG artifacts for the flight plots.",
             "",
@@ -882,15 +1009,21 @@ def write_reports(
     for key, value in metrics.items():
         rendered = f"{value:.3f}" if isinstance(value, float) else str(value)
         html_lines.append(f"<tr><td>{html.escape(key)}</td><td>{rendered}</td></tr>")
-    html_lines.append("</table><h2>Plots</h2>")
-    for path in plot_paths:
-        html_lines.append(f"<h3>{html.escape(path.name)}</h3><img src='{image_data_uri(path)}' alt='{html.escape(path.name)}'>")
+    if plot_paths:
+        html_lines.append("</table><h2>Plots</h2>")
+        for path in plot_paths:
+            html_lines.append(f"<h3>{html.escape(path.name)}</h3><img src='{image_data_uri(path)}' alt='{html.escape(path.name)}'>")
+    else:
+        html_lines.append("</table>")
     html_lines.append("</body></html>")
     (artifact_dir / "native-sim-report.html").write_text("\n".join(html_lines))
 
 
 def main() -> int:
     args = parse_args()
+    if args.lockstep_regression_only and args.t_end is None:
+        args.t_end = max(1.25, args.lockstep_check_target_s + 0.25)
+
     artifact_dir = (ROOT / args.artifacts).resolve() if not Path(args.artifacts).is_absolute() else Path(args.artifacts)
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
@@ -970,6 +1103,27 @@ def main() -> int:
         write_csv(pwm_csv, bridge_log.pwm_rows)
         write_csv(attitude_csv, bridge_log.attitude_rows)
 
+        lockstep = lockstep_metrics(
+            bridge_log,
+            args.lockstep_check_target_s,
+            args.lockstep_check_tolerance_s,
+        )
+
+        if args.lockstep_regression_only:
+            checks = []
+            for name, ok, detail in run_lockstep_checks(lockstep):
+                checks.append((name, "PASS" if ok else "FAIL", detail))
+            write_reports(artifact_dir, lockstep, checks, [])
+            failed = [f"{name}: {detail}" for name, status, detail in checks if status == "FAIL"]
+            if failed:
+                raise RuntimeError("native SIL lockstep checks failed:\n- " + "\n- ".join(failed))
+
+            print(f"wrote {odometry_csv}")
+            print(f"wrote {pwm_csv}")
+            print(f"wrote {artifact_dir / 'native-sim-summary.md'}")
+            print(f"wrote {artifact_dir / 'native-sim-report.html'}")
+            return 0
+
         if not plant_csv.exists():
             raise RuntimeError(f"Rumoca plant trace was not written: {plant_csv}\n\n{tail(rumoca_log)}")
 
@@ -981,6 +1135,7 @@ def main() -> int:
         write_merged_csv(merged_csv, merged_rows)
         plot_paths = plot_flight(merged_rows, artifact_dir)
         metrics = flight_metrics(merged_rows, bridge_log)
+        metrics.update(lockstep)
         checks = run_checks(metrics)
         write_reports(artifact_dir, metrics, checks, plot_paths)
 
