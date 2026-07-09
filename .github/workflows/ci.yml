@@ -207,6 +207,10 @@ jobs:
           use-flakehub: disabled
           use-gha-cache: enabled
 
+      - name: Update west workspace
+        working-directory: cerebri_cubs2
+        run: nix $NIX_FLAGS run .#west-update
+
       - name: Run Modelica flight test
         working-directory: cerebri_cubs2
         run: nix $NIX_FLAGS run .#flight-sil-test

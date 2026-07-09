@@ -14,15 +14,29 @@ import math
 import os
 from pathlib import Path
 import re
-import struct
 import subprocess
 import sys
 import threading
 import time
 from typing import Iterable
 
+import flatbuffers
 import matplotlib
 import numpy as np
+from synapse.topic.AttitudeCommandData import AttitudeCommandData
+from synapse.topic.ExternalOdometry import ExternalOdometry
+from synapse.topic.ExternalOdometryData import ExternalOdometryData
+from synapse.topic.ExternalOdometryFlags import ExternalOdometryFlags
+from synapse.topic.ExternalOdometryStatus import ExternalOdometryStatus
+from synapse.topic.PwmSignalOutputs import (
+    AddData as PwmSignalOutputsAddData,
+    End as PwmSignalOutputsEnd,
+    Start as PwmSignalOutputsStart,
+)
+from synapse.topic.PwmSignalOutputsData import CreatePwmSignalOutputsData, PwmSignalOutputsData
+from synapse.types.Quaternionf import Quaternionf
+from synapse.types.RateTriplet import RateTriplet
+from synapse.types.Vec3f import Vec3f
 import zenoh
 
 matplotlib.use("Agg")
@@ -30,15 +44,16 @@ import matplotlib.pyplot as plt
 
 
 ROOT = Path(__file__).resolve().parents[2]
+WORKSPACE_ROOT = Path(os.environ.get("CUBS2_WORKSPACE_ROOT", ROOT.parent)).resolve()
 
 SYNAPSE_EXTERNAL_ODOMETRY_TOPIC = "synapse/v1/topic/external_odometry"
 SYNAPSE_PWM_TOPIC = "synapse/v1/topic/pwm_signal_outputs"
 SYNAPSE_ATTITUDE_COMMAND_TOPIC = "synapse/v1/topic/attitude_command"
-RUMOCA_EXTERNAL_ODOMETRY_TOPIC = "cubs2/sil/external_odometry_sample"
-RUMOCA_PWM_TOPIC = "cubs2/sil/pwm_outputs"
+RUMOCA_EXTERNAL_ODOMETRY_TOPIC = "cubs2/sil/external_odometry"
+RUMOCA_PWM_TOPIC = "cubs2/sil/pwm_signal_outputs"
 
-NATIVE_IO_SCHEMA = ROOT / "tests" / "zephyr" / "native_sil_io.fbs"
 DEFAULT_SCENARIO = ROOT / "tests" / "zephyr" / "rumoca-scenario.native-sim.toml"
+SYNAPSE_BFBS_RELATIVE = Path("_deps") / "synapse_fbs_c-src" / "bfbs" / "all.bfbs"
 RUMOCA_SESSION_CHECK_CODE = (
     "import rumoca as rum; "
     "runner = getattr(rum.Session(), 'run_scenario', None); "
@@ -46,12 +61,12 @@ RUMOCA_SESSION_CHECK_CODE = (
 )
 RUMOCA_RUN_SCENARIO_CODE = "import sys; import rumoca as rum; rum.Session().run_scenario(sys.argv[1])"
 
-PWM_STRUCT = struct.Struct("<QIBx16H2x")
-ATTITUDE_COMMAND_STRUCT = struct.Struct("<Q4f3ffB7x")
-EXTERNAL_ODOMETRY_STRUCT = struct.Struct("<Q3f4f3f3fBBBB")
-EXTERNAL_ODOMETRY_FLAGS_VALID = 0x0F
-EXTERNAL_ODOMETRY_STATUS_FILTERED = 1
-EXTERNAL_ODOMETRY_STATUS_LOST = 4
+EXTERNAL_ODOMETRY_VALID_FLAGS = (
+    ExternalOdometryFlags.PositionValid
+    | ExternalOdometryFlags.AttitudeValid
+    | ExternalOdometryFlags.LinearVelocityValid
+    | ExternalOdometryFlags.AngularVelocityValid
+)
 
 ROUTE_WAYPOINTS = [
     (0.0, 0.0, 0.0),
@@ -62,25 +77,6 @@ ROUTE_WAYPOINTS = [
     (6.88, -5.1, 3.0),
     (-4.0, -5.0, 3.0),
 ]
-
-
-@dataclass
-class ExternalOdometrySample:
-    timestamp_us: int
-    x_m: float
-    y_m: float
-    z_m: float
-    qw: float
-    qx: float
-    qy: float
-    qz: float
-    vx_m_s: float
-    vy_m_s: float
-    vz_m_s: float
-    roll_rate_rad_s: float
-    pitch_rate_rad_s: float
-    yaw_rate_rad_s: float
-    tracking_valid: bool
 
 
 @dataclass
@@ -199,22 +195,25 @@ def open_zenoh_session(locator: str, timeout_s: float) -> zenoh.Session:
     raise RuntimeError(f"could not open Zenoh session to {locator}: {last_error}")
 
 
-def generate_bfbs(artifact_dir: Path) -> Path:
-    bfbs = artifact_dir / "native_sil_io.bfbs"
-    run_checked(["flatc", "--binary", "--schema", "-o", os.fspath(artifact_dir), os.fspath(NATIVE_IO_SCHEMA)])
+def synapse_bfbs_for_sim(sim: Path) -> Path:
+    build_dir = sim.parent.parent
+    bfbs = build_dir / SYNAPSE_BFBS_RELATIVE
     if not bfbs.exists():
-        raise FileNotFoundError(f"flatc did not write {bfbs}")
+        raise FileNotFoundError(
+            f"Synapse schema BFBS not found: {bfbs}\n"
+            "Build the native_sim target first so csyn can unpack the pinned synapse_fbs release."
+        )
     return bfbs
 
 
-def scenario_for_run(scenario: Path, artifact_dir: Path, t_end: float | None) -> Path:
+def scenario_for_run(scenario: Path, artifact_dir: Path, t_end: float | None, synapse_bfbs: Path) -> Path:
     text = scenario.read_text()
     replacements = {
         'file = "Cubs2NativeSimSIL.mo"': f'file = "{(ROOT / "tests" / "zephyr" / "Cubs2NativeSimSIL.mo").as_posix()}"',
-        '"../../models/vendor/CMM-v0.0.2"': f'"{(ROOT / "models" / "vendor" / "CMM-v0.0.2").as_posix()}"',
+        '"../../../models/vendor/CMM-v0.0.2"': f'"{(WORKSPACE_ROOT / "models" / "vendor" / "CMM-v0.0.2").as_posix()}"',
         '"../../models/plant"': f'"{(ROOT / "models" / "plant").as_posix()}"',
         'output = "artifacts/native-sim-sil/native-sim-rumoca.html"': f'output = "{(artifact_dir / "native-sim-rumoca.html").as_posix()}"',
-        'bfbs = ["artifacts/native-sim-sil/native_sil_io.bfbs"]': f'bfbs = ["{(artifact_dir / "native_sil_io.bfbs").as_posix()}"]',
+        'bfbs = ["build-native_sim/_deps/synapse_fbs_c-src/bfbs/all.bfbs"]': f'bfbs = ["{synapse_bfbs.as_posix()}"]',
         'path = "artifacts/native-sim-sil/native-sim-plant.csv"': f'path = "{(artifact_dir / "native-sim-plant.csv").as_posix()}"',
     }
 
@@ -234,121 +233,92 @@ def scenario_for_run(scenario: Path, artifact_dir: Path, t_end: float | None) ->
     return path
 
 
-def table_start(buf: bytes) -> int:
-    return struct.unpack_from("<I", buf, 0)[0]
+def fixed_struct_payload(data: object, size: int) -> bytes:
+    table = getattr(data, "_tab", None)
+    if table is None:
+        raise ValueError(f"{type(data).__name__} is not initialized")
+    end = table.Pos + size
+    if len(table.Bytes) < end:
+        raise ValueError(f"{type(data).__name__} expected {size} bytes at {table.Pos}, got {len(table.Bytes)}")
+    return bytes(table.Bytes[table.Pos:end])
 
 
-def read_flatbuffer_field(buf: bytes, field_id: int, fmt: str, default: float | int | bool) -> float | int | bool:
-    table = table_start(buf)
-    vtable = table - struct.unpack_from("<i", buf, table)[0]
-    vtable_size = struct.unpack_from("<H", buf, vtable)[0]
-    slot = vtable + 4 + 2 * field_id
-    if slot + 2 > vtable + vtable_size:
-        return default
-    offset = struct.unpack_from("<H", buf, slot)[0]
-    if offset == 0:
-        return default
-    return struct.unpack_from(fmt, buf, table + offset)[0]
+def decode_external_odometry(payload: bytes) -> ExternalOdometryData:
+    data = ExternalOdometry.GetRootAs(payload).Data()
+    if data is None:
+        raise ValueError("ExternalOdometry payload has no data field")
+    return data
 
 
-def decode_external_odometry_sample(payload: bytes) -> ExternalOdometrySample:
-    return ExternalOdometrySample(
-        timestamp_us=int(read_flatbuffer_field(payload, 0, "<Q", 0)),
-        x_m=float(read_flatbuffer_field(payload, 1, "<f", 0.0)),
-        y_m=float(read_flatbuffer_field(payload, 2, "<f", 0.0)),
-        z_m=float(read_flatbuffer_field(payload, 3, "<f", 0.0)),
-        qw=float(read_flatbuffer_field(payload, 4, "<f", 1.0)),
-        qx=float(read_flatbuffer_field(payload, 5, "<f", 0.0)),
-        qy=float(read_flatbuffer_field(payload, 6, "<f", 0.0)),
-        qz=float(read_flatbuffer_field(payload, 7, "<f", 0.0)),
-        vx_m_s=float(read_flatbuffer_field(payload, 8, "<f", 0.0)),
-        vy_m_s=float(read_flatbuffer_field(payload, 9, "<f", 0.0)),
-        vz_m_s=float(read_flatbuffer_field(payload, 10, "<f", 0.0)),
-        roll_rate_rad_s=float(read_flatbuffer_field(payload, 11, "<f", 0.0)),
-        pitch_rate_rad_s=float(read_flatbuffer_field(payload, 12, "<f", 0.0)),
-        yaw_rate_rad_s=float(read_flatbuffer_field(payload, 13, "<f", 0.0)),
-        tracking_valid=bool(read_flatbuffer_field(payload, 14, "<B", 0)),
+def tracking_valid(flags: int, status: int) -> bool:
+    return (
+        (flags & EXTERNAL_ODOMETRY_VALID_FLAGS) == EXTERNAL_ODOMETRY_VALID_FLAGS
+        and (flags & ExternalOdometryFlags.Lost) == 0
+        and status != ExternalOdometryStatus.Lost
     )
 
 
-def pack_synapse_external_odometry(sample: ExternalOdometrySample) -> bytes:
-    flags = EXTERNAL_ODOMETRY_FLAGS_VALID if sample.tracking_valid else 0
-    status = EXTERNAL_ODOMETRY_STATUS_FILTERED if sample.tracking_valid else EXTERNAL_ODOMETRY_STATUS_LOST
-    return EXTERNAL_ODOMETRY_STRUCT.pack(
-        sample.timestamp_us,
-        sample.x_m,
-        sample.y_m,
-        sample.z_m,
-        sample.qw,
-        sample.qx,
-        sample.qy,
-        sample.qz,
-        sample.vx_m_s,
-        sample.vy_m_s,
-        sample.vz_m_s,
-        sample.roll_rate_rad_s,
-        sample.pitch_rate_rad_s,
-        sample.yaw_rate_rad_s,
-        flags,
-        status,
-        0,
-        1,
-    )
+def external_odometry_row(data: ExternalOdometryData) -> dict[str, float | int | bool]:
+    position = data.PositionEnuM(Vec3f())
+    attitude = data.Attitude(Quaternionf())
+    velocity = data.LinearVelocityEnuMS(Vec3f())
+    rates = data.AngularVelocityFluRadS(RateTriplet())
+    flags = int(data.Flags())
+    status = int(data.Status())
+    timestamp_us = int(data.TimestampUs())
+    return {
+        "sim_time_s": timestamp_us / 1_000_000.0,
+        "timestamp_us": timestamp_us,
+        "x_m": float(position.X()),
+        "y_m": float(position.Y()),
+        "z_m": float(position.Z()),
+        "qw": float(attitude.W()),
+        "qx": float(attitude.X()),
+        "qy": float(attitude.Y()),
+        "qz": float(attitude.Z()),
+        "vx_m_s": float(velocity.X()),
+        "vy_m_s": float(velocity.Y()),
+        "vz_m_s": float(velocity.Z()),
+        "roll_rate_rad_s": float(rates.Roll()),
+        "pitch_rate_rad_s": float(rates.Pitch()),
+        "yaw_rate_rad_s": float(rates.Yaw()),
+        "flags": flags,
+        "status": status,
+        "source_id": int(data.SourceId()),
+        "id": int(data.Id()),
+        "tracking_valid": tracking_valid(flags, status),
+    }
 
 
 def decode_pwm_outputs(payload: bytes, sim_time_s: float) -> dict[str, float | int]:
-    if len(payload) != PWM_STRUCT.size:
-        raise ValueError(f"expected {PWM_STRUCT.size} PWM bytes, got {len(payload)}")
-    timestamp_us, active_mask, port, *outputs = PWM_STRUCT.unpack(payload)
+    if len(payload) != PwmSignalOutputsData.SizeOf():
+        raise ValueError(f"expected {PwmSignalOutputsData.SizeOf()} PWM bytes, got {len(payload)}")
+    data = PwmSignalOutputsData()
+    data.Init(payload, 0)
     row: dict[str, float | int] = {
         "sim_time_s": sim_time_s,
-        "timestamp_us": timestamp_us,
-        "active_mask": active_mask,
-        "port": port,
+        "timestamp_us": int(data.TimestampUs()),
+        "active_mask": int(data.ActiveMask()),
+        "port": int(data.Port()),
     }
-    row.update({f"output{i}_us": value for i, value in enumerate(outputs)})
+    row.update({f"output{i}_us": int(getattr(data, f"Output{i}Us")()) for i in range(16)})
     return row
 
 
 def pack_rumoca_pwm_outputs(row: dict[str, float | int]) -> bytes:
-    # Match Rumoca PackCodec's deterministic all-inline table layout for
-    # cubs2.sil.PwmOutputs. This avoids a compact builder layout whose size can
-    # differ from the receive codec's expected 104-byte packet.
-    buf = bytearray(104)
-    vtable_off = 4
-    table_off = 48
-    field_offsets = [
-        8,   # timestamp_us
-        16,  # active_mask
-        20,  # port
-        22,  # output0_us
-        24,
-        26,
-        28,
-        30,
-        32,
-        34,
-        36,
-        38,
-        40,
-        42,
-        44,
-        46,
-        48,
-        50,
-        52,  # output15_us
-    ]
-    struct.pack_into("<I", buf, 0, table_off)
-    struct.pack_into("<HH", buf, vtable_off, 42, 56)
-    for field_id, offset in enumerate(field_offsets):
-        struct.pack_into("<H", buf, vtable_off + 4 + 2 * field_id, offset)
-    struct.pack_into("<I", buf, table_off, table_off - vtable_off)
-    struct.pack_into("<Q", buf, table_off + field_offsets[0], int(row["timestamp_us"]))
-    struct.pack_into("<I", buf, table_off + field_offsets[1], int(row["active_mask"]))
-    struct.pack_into("<B", buf, table_off + field_offsets[2], int(row["port"]))
-    for idx in range(16):
-        struct.pack_into("<H", buf, table_off + field_offsets[3 + idx], int(row[f"output{idx}_us"]))
-    return bytes(buf)
+    builder = flatbuffers.Builder(PwmSignalOutputsData.SizeOf() + 32)
+    data = CreatePwmSignalOutputsData(
+        builder,
+        int(row["timestamp_us"]),
+        int(row["active_mask"]),
+        int(row["port"]),
+        *(int(row[f"output{idx}_us"]) for idx in range(16)),
+    )
+    PwmSignalOutputsStart(builder)
+    PwmSignalOutputsAddData(builder, data)
+    message = PwmSignalOutputsEnd(builder)
+    builder.Finish(message)
+    return bytes(builder.Output())
 
 
 def euler_from_quat(qw: float, qx: float, qy: float, qz: float) -> tuple[float, float, float]:
@@ -364,28 +334,24 @@ def euler_from_quat(qw: float, qx: float, qy: float, qz: float) -> tuple[float, 
 
 
 def decode_attitude_command(payload: bytes, sim_time_s: float) -> dict[str, float | int]:
-    if len(payload) != ATTITUDE_COMMAND_STRUCT.size:
-        raise ValueError(
-            f"expected {ATTITUDE_COMMAND_STRUCT.size} attitude-command bytes, got {len(payload)}"
-        )
-    values = ATTITUDE_COMMAND_STRUCT.unpack(payload)
-    timestamp_us = values[0]
-    qw, qx, qy, qz = values[1:5]
-    roll, pitch, yaw = euler_from_quat(qw, qx, qy, qz)
-    rate_roll, rate_pitch, rate_yaw = values[5:8]
-    thrust = values[8]
-    type_mask = values[9]
+    if len(payload) != AttitudeCommandData.SizeOf():
+        raise ValueError(f"expected {AttitudeCommandData.SizeOf()} attitude-command bytes, got {len(payload)}")
+    data = AttitudeCommandData()
+    data.Init(payload, 0)
+    attitude = data.Attitude(Quaternionf())
+    rates = data.BodyRateFluRadS(RateTriplet())
+    roll, pitch, yaw = euler_from_quat(attitude.W(), attitude.X(), attitude.Y(), attitude.Z())
     return {
         "sim_time_s": sim_time_s,
-        "timestamp_us": timestamp_us,
+        "timestamp_us": int(data.TimestampUs()),
         "roll_cmd_rad": roll,
         "pitch_cmd_rad": pitch,
         "yaw_cmd_rad": yaw,
-        "rate_roll_cmd_rad_s": rate_roll,
-        "rate_pitch_cmd_rad_s": rate_pitch,
-        "rate_yaw_cmd_rad_s": rate_yaw,
-        "thrust_cmd": thrust,
-        "type_mask": type_mask,
+        "rate_roll_cmd_rad_s": float(rates.Roll()),
+        "rate_pitch_cmd_rad_s": float(rates.Pitch()),
+        "rate_yaw_cmd_rad_s": float(rates.Yaw()),
+        "thrust_cmd": float(data.Thrust()),
+        "type_mask": int(data.TypeMask()),
     }
 
 
@@ -411,30 +377,15 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
                 sample = odometry_subscriber.try_recv()
                 if sample is None:
                     break
-                odometry = decode_external_odometry_sample(payload_bytes(sample))
-                latest_sim_time_s = odometry.timestamp_us / 1_000_000.0
-                session.put(SYNAPSE_EXTERNAL_ODOMETRY_TOPIC, pack_synapse_external_odometry(odometry))
-                odometry_forwarded = True
-                logs.odometry_rows.append(
-                    {
-                        "sim_time_s": latest_sim_time_s,
-                        "timestamp_us": odometry.timestamp_us,
-                        "x_m": odometry.x_m,
-                        "y_m": odometry.y_m,
-                        "z_m": odometry.z_m,
-                        "qw": odometry.qw,
-                        "qx": odometry.qx,
-                        "qy": odometry.qy,
-                        "qz": odometry.qz,
-                        "vx_m_s": odometry.vx_m_s,
-                        "vy_m_s": odometry.vy_m_s,
-                        "vz_m_s": odometry.vz_m_s,
-                        "roll_rate_rad_s": odometry.roll_rate_rad_s,
-                        "pitch_rate_rad_s": odometry.pitch_rate_rad_s,
-                        "yaw_rate_rad_s": odometry.yaw_rate_rad_s,
-                        "tracking_valid": odometry.tracking_valid,
-                    }
+                odometry = decode_external_odometry(payload_bytes(sample))
+                odometry_row = external_odometry_row(odometry)
+                latest_sim_time_s = float(odometry_row["sim_time_s"])
+                session.put(
+                    SYNAPSE_EXTERNAL_ODOMETRY_TOPIC,
+                    fixed_struct_payload(odometry, ExternalOdometryData.SizeOf()),
                 )
+                odometry_forwarded = True
+                logs.odometry_rows.append(odometry_row)
                 did_work = True
 
             while True:
@@ -959,7 +910,8 @@ def main() -> int:
     attitude_csv = artifact_dir / "native-sim-attitude-command.csv"
     merged_csv = artifact_dir / "native-sim-flight.csv"
 
-    scenario_to_run = scenario_for_run(scenario, artifact_dir, args.t_end)
+    synapse_bfbs = synapse_bfbs_for_sim(sim)
+    scenario_to_run = scenario_for_run(scenario, artifact_dir, args.t_end, synapse_bfbs)
     rumoca_cmd = [sys.executable, "-c", RUMOCA_RUN_SCENARIO_CODE, os.fspath(scenario_to_run)]
     run_checked([sys.executable, "-c", RUMOCA_SESSION_CHECK_CODE])
 
@@ -971,8 +923,6 @@ def main() -> int:
     bridge_thread: threading.Thread | None = None
 
     try:
-        generate_bfbs(artifact_dir)
-
         router = start_process("zenohd", ["zenohd", "-l", args.locator], router_log)
         time.sleep(0.5)
         require_running(router, router_log, "zenohd")

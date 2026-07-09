@@ -170,7 +170,10 @@ model Cubs2NativeSimSIL
   discrete output Real odometry_roll_rate_rad_s(start = 0.0);
   discrete output Real odometry_pitch_rate_rad_s(start = 0.0);
   discrete output Real odometry_yaw_rate_rad_s(start = 0.0);
-  discrete output Boolean odometry_tracking_valid(start = true);
+  output Real odometry_flags;
+  output Real odometry_status;
+  output Real odometry_source_id;
+  output Real odometry_id;
 
 protected
   Real euler_rad[3];
@@ -238,5 +241,8 @@ equation
   odometry_roll_rate_rad_s = mocap.roll_rate_rad_s;
   odometry_pitch_rate_rad_s = mocap.pitch_rate_rad_s;
   odometry_yaw_rate_rad_s = mocap.yaw_rate_rad_s;
-  odometry_tracking_valid = mocap.tracking_valid;
+  odometry_flags = 15.0;
+  odometry_status = 1.0;
+  odometry_source_id = 0.0;
+  odometry_id = 1.0;
 end Cubs2NativeSimSIL;

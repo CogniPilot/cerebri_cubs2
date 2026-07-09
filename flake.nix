@@ -22,6 +22,7 @@
       defaultNativeSimBoard = "native_sim";
       defaultNativeSim64Board = "native_sim/native/64";
       rumocaVersion = "0.9.16";
+      synapseFbsVersion = "0.5.0";
       mkRumocaPythonPackage =
         pkgs:
         let
@@ -76,8 +77,42 @@
             platforms = supportedSystems;
           };
         };
+      mkSynapseFbsPythonPackage =
+        pkgs:
+        pkgs.python3Packages.buildPythonPackage {
+          pname = "synapse-fbs";
+          version = synapseFbsVersion;
+          pyproject = true;
+
+          src = pkgs.fetchurl {
+            url = "https://files.pythonhosted.org/packages/source/s/synapse-fbs/synapse_fbs-${synapseFbsVersion}.tar.gz";
+            hash = "sha256-ftpctkqYeoBE+bQTgPA+FWBWXwVbObcRcvJH3SEn9fg=";
+          };
+
+          nativeBuildInputs = [
+            pkgs.python3Packages.setuptools
+            pkgs.python3Packages.wheel
+          ];
+
+          propagatedBuildInputs = [
+            pkgs.python3Packages.flatbuffers
+          ];
+
+          doCheck = false;
+          pythonImportsCheck = [
+            "synapse.topic.ExternalOdometry"
+            "synapse.topic.PwmSignalOutputs"
+          ];
+
+          meta = {
+            description = "Generated Python FlatBuffers bindings for Synapse schemas";
+            homepage = "https://github.com/CogniPilot/synapse_fbs";
+            license = lib.licenses.asl20;
+            platforms = supportedSystems;
+          };
+        };
       mkPythonEnv =
-        pkgs: rumocaPythonPackage:
+        pkgs: rumocaPythonPackage: synapseFbsPythonPackage:
         pkgs.python3.withPackages (
           ps: with ps; [
             anytree
@@ -96,6 +131,7 @@
             tqdm
             west
             rumocaPythonPackage
+            synapseFbsPythonPackage
           ]
         );
       mkFlightPythonEnv =
@@ -108,13 +144,14 @@
           ]
         );
       mkNativeSimSilPythonEnv =
-        pkgs: rumocaPythonPackage:
+        pkgs: rumocaPythonPackage: synapseFbsPythonPackage:
         pkgs.python3.withPackages (
           ps: with ps; [
             flatbuffers
             matplotlib
             numpy
             rumocaPythonPackage
+            synapseFbsPythonPackage
             zenoh
           ]
         );
@@ -125,9 +162,10 @@
         let
           pkgs = pkgsFor system;
           rumocaPythonPackage = mkRumocaPythonPackage pkgs;
-          pythonEnv = mkPythonEnv pkgs rumocaPythonPackage;
+          synapseFbsPythonPackage = mkSynapseFbsPythonPackage pkgs;
+          pythonEnv = mkPythonEnv pkgs rumocaPythonPackage synapseFbsPythonPackage;
           flightPythonEnv = mkFlightPythonEnv pkgs rumocaPythonPackage;
-          nativeSimSilPythonEnv = mkNativeSimSilPythonEnv pkgs rumocaPythonPackage;
+          nativeSimSilPythonEnv = mkNativeSimSilPythonEnv pkgs rumocaPythonPackage synapseFbsPythonPackage;
           hostCc = if system == "x86_64-linux" then pkgs.gcc_multi else pkgs.stdenv.cc;
           hostMultilibTools = lib.optionals (system == "x86_64-linux") [
             pkgs.glibc_multi.dev
@@ -294,7 +332,8 @@
                 modules/lib/zenoh-pico \
                 modules/lib/zros \
                 modules/lib/csyn \
-                modules/lib/zephyr_boards
+                modules/lib/zephyr_boards \
+                models/vendor/CMM-v0.0.2
               do
                 if [ ! -d "$workspace/$path" ]; then
                   printf 'error: missing required west checkout: %s/%s\n' "$workspace" "$path" >&2
@@ -568,20 +607,15 @@
             '';
           };
 
-          cubs2-flight-sil-test = pkgs.writeShellApplication {
-            name = "cubs2-flight-sil-test";
-            runtimeInputs = [
-              pkgs.coreutils
-              flightPythonEnv
-            ];
-            text = ''
-              ${commonScript}
+          cubs2-flight-sil-test = mkWestApp "cubs2-flight-sil-test" [ flightPythonEnv ] ''
+            ${commonScript}
 
-              app="$(zephyr_app_find_app)"
-              cd "$app"
-              exec "${flightPythonEnv}/bin/python" tests/flight/run_cubs2_flight_sil.py "$@"
-            '';
-          };
+            app="$(zephyr_app_find_app)"
+            zephyr_app_export_common "$app"
+            zephyr_app_require_workspace "$app"
+            cd "$app"
+            exec "${flightPythonEnv}/bin/python" tests/flight/run_cubs2_flight_sil.py "$@"
+          '';
 
           cubs2-native-sim-sil-test = pkgs.writeShellApplication {
             name = "cubs2-native-sim-sil-test";
@@ -612,7 +646,6 @@
             name = "cubs2-native-sim-sil-run";
             runtimeInputs = [
               pkgs.coreutils
-              pkgs.flatbuffers
               pkgs.zenoh
               nativeSimSilPythonEnv
             ];
@@ -733,6 +766,7 @@
           inherit
             host-tools
             rumocaPythonPackage
+            synapseFbsPythonPackage
             cubs2-build
             cubs2-build-native-sim
             cubs2-build-native-sim-64
@@ -749,6 +783,7 @@
             ;
 
           rumoca = rumocaPythonPackage;
+          synapse-fbs = synapseFbsPythonPackage;
           default = host-tools;
         }
       );
@@ -844,7 +879,8 @@
         let
           pkgs = pkgsFor system;
           rumocaPythonPackage = self.packages.${system}.rumocaPythonPackage;
-          pythonEnv = mkPythonEnv pkgs rumocaPythonPackage;
+          synapseFbsPythonPackage = self.packages.${system}.synapseFbsPythonPackage;
+          pythonEnv = mkPythonEnv pkgs rumocaPythonPackage synapseFbsPythonPackage;
           packages = self.packages.${system};
         in
         {

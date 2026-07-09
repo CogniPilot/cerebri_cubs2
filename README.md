@@ -102,9 +102,10 @@ The native-sim SIL runner starts `zenohd` on `udp/127.0.0.1:7447`, launches
 `build-native_sim/zephyr/zephyr.exe`, and passes
 `tests/zephyr/rumoca-scenario.native-sim.toml` to the Rumoca Python
 `Session.run_scenario(...)` path. The TOML owns the lockstep, Zenoh, schema,
-publish/subscribe, debug log, physics, and solver setup. The bridge translates
-the Rumoca-facing pose/twist sample into fixed-layout Synapse external odometry,
-then writes CSV, PNG, Markdown, and HTML artifacts that grade route laps,
+publish/subscribe, debug log, physics, and solver setup. Rumoca uses the
+`synapse_fbs` FlatBuffers wrapper schemas for the SIL transport, while the
+bridge forwards fixed-layout Synapse topic payloads to and from the Zephyr app.
+It then writes CSV, PNG, Markdown, and HTML artifacts that grade route laps,
 altitude, velocity, bank, pitch, and crosstrack tracking.
 
 The same traffic is inspectable from another terminal while the test is
