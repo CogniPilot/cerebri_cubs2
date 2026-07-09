@@ -52,11 +52,68 @@ annotation(
   Inline = true);
 end nativeSilThrottlePwmToStick;
 
+block MocapPoseTwistSource
+  parameter Real sampleRate_hz(unit = "Hz") = 240.0;
+  parameter Real positionStd_m(unit = "m") = 0.001;
+
+  input Real position_m[3];
+  input Real quat[4];
+  input Real velocity_m_s[3];
+  input Real angular_velocity_rad_s[3];
+
+  discrete output Real timestamp_us(start = 0.0);
+  discrete output Real x_m(start = 0.0);
+  discrete output Real y_m(start = 0.0);
+  discrete output Real z_m(start = 0.1);
+  discrete output Real qw(start = 1.0);
+  discrete output Real qx(start = 0.0);
+  discrete output Real qy(start = 0.0);
+  discrete output Real qz(start = 0.0);
+  discrete output Real vx_m_s(start = 0.0);
+  discrete output Real vy_m_s(start = 0.0);
+  discrete output Real vz_m_s(start = 0.0);
+  discrete output Real roll_rate_rad_s(start = 0.0);
+  discrete output Real pitch_rate_rad_s(start = 0.0);
+  discrete output Real yaw_rate_rad_s(start = 0.0);
+  discrete output Boolean tracking_valid(start = true);
+
+protected
+  Real samplePeriod_s;
+  discrete Real sampleCount(start = 0.0);
+
+equation
+  samplePeriod_s = 1.0 / sampleRate_hz;
+
+algorithm
+  when sample(0.0, samplePeriod_s) then
+    sampleCount := pre(sampleCount) + 1.0;
+    timestamp_us := 1000000.0 * time;
+    x_m := position_m[1] + positionStd_m * nativeSilNoise(pre(sampleCount), 1.0);
+    y_m := position_m[2] + positionStd_m * nativeSilNoise(pre(sampleCount), 2.0);
+    z_m := position_m[3] + positionStd_m * nativeSilNoise(pre(sampleCount), 3.0);
+    qw := quat[1];
+    qx := quat[2];
+    qy := quat[3];
+    qz := quat[4];
+    vx_m_s := velocity_m_s[1];
+    vy_m_s := velocity_m_s[2];
+    vz_m_s := velocity_m_s[3];
+    roll_rate_rad_s := angular_velocity_rad_s[1];
+    pitch_rate_rad_s := angular_velocity_rad_s[2];
+    yaw_rate_rad_s := angular_velocity_rad_s[3];
+    tracking_valid := true;
+  end when;
+end MocapPoseTwistSource;
+
 model Cubs2NativeSimSIL
   parameter Real mocapRate_hz(unit = "Hz") = 240.0;
   parameter Real mocapPositionStd_m(unit = "m") = 0.001;
 
   SportCubPlant vehicle;
+  MocapPoseTwistSource mocap(
+    sampleRate_hz = mocapRate_hz,
+    positionStd_m = mocapPositionStd_m
+  );
   FixedWingFBW innerLoop(
     v_prot_lo = 2.6,
     v_prot_hi = 3.6,
@@ -99,24 +156,26 @@ model Cubs2NativeSimSIL
   output Real roll_command_rad;
   output Real course_error_rad;
 
-  discrete output Real mocap_timestamp_us(start = 0.0);
-  discrete output Real mocap_frame_number(start = 0.0);
-  discrete output Real mocap_x_m(start = 0.0);
-  discrete output Real mocap_y_m(start = 0.0);
-  discrete output Real mocap_z_m(start = 0.1);
-  discrete output Real mocap_qw(start = 1.0);
-  discrete output Real mocap_qx(start = 0.0);
-  discrete output Real mocap_qy(start = 0.0);
-  discrete output Real mocap_qz(start = 0.0);
-  discrete output Boolean mocap_tracking_valid(start = true);
+  discrete output Real odometry_timestamp_us(start = 0.0);
+  discrete output Real odometry_x_m(start = 0.0);
+  discrete output Real odometry_y_m(start = 0.0);
+  discrete output Real odometry_z_m(start = 0.1);
+  discrete output Real odometry_qw(start = 1.0);
+  discrete output Real odometry_qx(start = 0.0);
+  discrete output Real odometry_qy(start = 0.0);
+  discrete output Real odometry_qz(start = 0.0);
+  discrete output Real odometry_vx_m_s(start = 0.0);
+  discrete output Real odometry_vy_m_s(start = 0.0);
+  discrete output Real odometry_vz_m_s(start = 0.0);
+  discrete output Real odometry_roll_rate_rad_s(start = 0.0);
+  discrete output Real odometry_pitch_rate_rad_s(start = 0.0);
+  discrete output Real odometry_yaw_rate_rad_s(start = 0.0);
+  discrete output Boolean odometry_tracking_valid(start = true);
 
 protected
   Real euler_rad[3];
-  Real mocapPeriod_s;
 
 equation
-  mocapPeriod_s = 1.0 / mocapRate_hz;
-
   stick_roll_cmd = -nativeSilCenteredPwmToStick(pwm0_us);
   stick_pitch_cmd = -nativeSilCenteredPwmToStick(pwm1_us);
   stick_throttle_cmd = nativeSilThrottlePwmToStick(pwm2_us);
@@ -136,6 +195,11 @@ equation
   vehicle.elev = innerLoop.elev;
   vehicle.rud = innerLoop.rud;
   vehicle.thr = innerLoop.thr;
+
+  mocap.position_m = vehicle.position;
+  mocap.quat = vehicle.quat;
+  mocap.velocity_m_s = vehicle.velocity;
+  mocap.angular_velocity_rad_s = vehicle.gyro;
 
   aileron_cmd = innerLoop.ail;
   elevator_cmd = innerLoop.elev;
@@ -160,23 +224,19 @@ equation
   roll_command_rad = pwm7_us / 1000.0;
   course_error_rad = pwm8_us / 1000.0;
 
-algorithm
-  when sample(0.0, mocapPeriod_s) then
-    mocap_timestamp_us := 1000000.0 * time;
-    mocap_frame_number := pre(mocap_frame_number) + 1.0;
-    mocap_x_m :=
-      vehicle.position[1]
-      + mocapPositionStd_m * nativeSilNoise(pre(mocap_frame_number), 1.0);
-    mocap_y_m :=
-      vehicle.position[2]
-      + mocapPositionStd_m * nativeSilNoise(pre(mocap_frame_number), 2.0);
-    mocap_z_m :=
-      vehicle.position[3]
-      + mocapPositionStd_m * nativeSilNoise(pre(mocap_frame_number), 3.0);
-    mocap_qw := vehicle.quat[1];
-    mocap_qx := vehicle.quat[2];
-    mocap_qy := vehicle.quat[3];
-    mocap_qz := vehicle.quat[4];
-    mocap_tracking_valid := true;
-  end when;
+  odometry_timestamp_us = mocap.timestamp_us;
+  odometry_x_m = mocap.x_m;
+  odometry_y_m = mocap.y_m;
+  odometry_z_m = mocap.z_m;
+  odometry_qw = mocap.qw;
+  odometry_qx = mocap.qx;
+  odometry_qy = mocap.qy;
+  odometry_qz = mocap.qz;
+  odometry_vx_m_s = mocap.vx_m_s;
+  odometry_vy_m_s = mocap.vy_m_s;
+  odometry_vz_m_s = mocap.vz_m_s;
+  odometry_roll_rate_rad_s = mocap.roll_rate_rad_s;
+  odometry_pitch_rate_rad_s = mocap.pitch_rate_rad_s;
+  odometry_yaw_rate_rad_s = mocap.yaw_rate_rad_s;
+  odometry_tracking_valid = mocap.tracking_valid;
 end Cubs2NativeSimSIL;

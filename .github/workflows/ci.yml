@@ -286,8 +286,8 @@ jobs:
         run: |
           chmod +x build-native_sim/zephyr/zephyr.exe
           nix $NIX_FLAGS run .#native-sim-sil-run -- \
-            --sim build-native_sim/zephyr/zephyr.exe \
-            --allow-missing-rumoca-scenario-runner
+            --sim build-native_sim/zephyr/zephyr.exe
+          test -s artifacts/native-sim-sil/native-sim-overview.png
 
       - name: Build native_sim/native/64 executable
         if: ${{ needs.release_tag.outputs.enabled == 'true' }}

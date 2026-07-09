@@ -18,7 +18,7 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import rumoca as rm
+import rumoca as rum
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -81,7 +81,7 @@ def csv_fields() -> list[str]:
     ]
 
 
-def result_columns(result: rm.Result) -> dict[str, list[float]]:
+def result_columns(result: rum.Result) -> dict[str, list[float]]:
     columns = {"time": [float(value) for value in result.time]}
     for name in result.names:
         columns[name] = [float(value) for value in result[name]]
@@ -96,7 +96,7 @@ def sample(columns: dict[str, list[float]], index: int, *keys: str, default: flo
     return default
 
 
-def normalize_rumoca_result(result: rm.Result, mode: str) -> list[dict[str, float | str]]:
+def normalize_rumoca_result(result: rum.Result, mode: str) -> list[dict[str, float | str]]:
     columns = result_columns(result)
     rows: list[dict[str, float | str]] = []
     count = len(columns["time"])
@@ -165,7 +165,7 @@ def run_rumoca_stage(mode: str, t_end: float | None = None) -> list[dict[str, fl
         raise FileNotFoundError(f"Rumoca scenario not found: {scenario.path}")
 
     print(f"simulate {scenario.path} with Rumoca Python binding", flush=True)
-    _session, model, sim_config = rm.Session.from_scenario(str(scenario.path))
+    _session, model, sim_config = rum.Session.from_scenario(str(scenario.path))
     result = model.simulate(t=(0.0, t_end if t_end is not None else scenario.t_end), config=sim_config)
     rows = normalize_rumoca_result(result, mode)
     write_csv(scenario.output, rows)

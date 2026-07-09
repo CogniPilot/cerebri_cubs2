@@ -31,7 +31,7 @@ mode = "client"
 endpoint = "udp/127.0.0.1:7447"
 
 [publish]
-send = "cubs2/sil/mocap_sample"
+send = "cubs2/sil/external_odometry_sample"
 
 [subscribe]
 receive = "cubs2/sil/pwm_outputs"
@@ -40,19 +40,24 @@ receive = "cubs2/sil/pwm_outputs"
 bfbs = ["artifacts/native-sim-sil/native_sil_io.bfbs"]
 
 [send]
-root_type = "cubs2.sil.MocapSample"
+root_type = "cubs2.sil.ExternalOdometrySample"
 
 [send.route]
-timestamp_us = "mocap_timestamp_us"
-frame_number = "mocap_frame_number"
-x_m = "mocap_x_m"
-y_m = "mocap_y_m"
-z_m = "mocap_z_m"
-qw = "mocap_qw"
-qx = "mocap_qx"
-qy = "mocap_qy"
-qz = "mocap_qz"
-tracking_valid = "mocap_tracking_valid"
+timestamp_us = "odometry_timestamp_us"
+x_m = "odometry_x_m"
+y_m = "odometry_y_m"
+z_m = "odometry_z_m"
+qw = "odometry_qw"
+qx = "odometry_qx"
+qy = "odometry_qy"
+qz = "odometry_qz"
+vx_m_s = "odometry_vx_m_s"
+vy_m_s = "odometry_vy_m_s"
+vz_m_s = "odometry_vz_m_s"
+roll_rate_rad_s = "odometry_roll_rate_rad_s"
+pitch_rate_rad_s = "odometry_pitch_rate_rad_s"
+yaw_rate_rad_s = "odometry_yaw_rate_rad_s"
+tracking_valid = "odometry_tracking_valid"
 
 [receive]
 root_type = "cubs2.sil.PwmOutputs"
@@ -69,16 +74,21 @@ output7_us = "model:pwm7_us"
 output8_us = "model:pwm8_us"
 
 [signals.send]
-mocap_timestamp_us = "model:mocap_timestamp_us"
-mocap_frame_number = "model:mocap_frame_number"
-mocap_x_m = "model:mocap_x_m"
-mocap_y_m = "model:mocap_y_m"
-mocap_z_m = "model:mocap_z_m"
-mocap_qw = "model:mocap_qw"
-mocap_qx = "model:mocap_qx"
-mocap_qy = "model:mocap_qy"
-mocap_qz = "model:mocap_qz"
-mocap_tracking_valid = "model:mocap_tracking_valid"
+odometry_timestamp_us = "model:odometry_timestamp_us"
+odometry_x_m = "model:odometry_x_m"
+odometry_y_m = "model:odometry_y_m"
+odometry_z_m = "model:odometry_z_m"
+odometry_qw = "model:odometry_qw"
+odometry_qx = "model:odometry_qx"
+odometry_qy = "model:odometry_qy"
+odometry_qz = "model:odometry_qz"
+odometry_vx_m_s = "model:odometry_vx_m_s"
+odometry_vy_m_s = "model:odometry_vy_m_s"
+odometry_vz_m_s = "model:odometry_vz_m_s"
+odometry_roll_rate_rad_s = "model:odometry_roll_rate_rad_s"
+odometry_pitch_rate_rad_s = "model:odometry_pitch_rate_rad_s"
+odometry_yaw_rate_rad_s = "model:odometry_yaw_rate_rad_s"
+odometry_tracking_valid = "model:odometry_tracking_valid"
 
 [debug_log]
 ring_size = 8192

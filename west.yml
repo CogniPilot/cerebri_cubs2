@@ -35,7 +35,7 @@ manifest:
       path: modules/lib/zros
     - name: csyn
       remote: cognipilot
-      revision: 360ce602e6aca614468a9822d50216add6a8e308 # native_sim Zenoh, synapse_fbs 0.3.3
+      revision: 4e7a0c607bd307e96a118c9710e6144d6abdc48a # external_odometry bridge, synapse_fbs 0.5.0 release
       path: modules/lib/csyn
     - name: zenoh-pico
       url: https://github.com/cognipilot/zenoh-pico.git

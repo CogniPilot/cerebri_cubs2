@@ -67,7 +67,6 @@ set(CUBS2_EFMI_CONTROL_INCLUDE_DIRS)
 
 function(cubs2_add_efmi_control_model model_name)
   set(_model_file ${CMAKE_CURRENT_SOURCE_DIR}/src/${model_name}.mo)
-  set(_codegen_script ${CMAKE_CURRENT_SOURCE_DIR}/scripts/rumoca_codegen.py)
   set(_efmu_dir ${CUBS2_RUMOCA_GENERATED_DIR}/${model_name})
   set(_stamp ${CUBS2_RUMOCA_GENERATED_DIR}/${model_name}.galec-production.stamp)
   set(_source ${_efmu_dir}/ProductionCode/${model_name}.c)
@@ -84,15 +83,15 @@ function(cubs2_add_efmi_control_model model_name)
       ${_efmu_dir}/__content.xml
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${_efmu_dir}"
     COMMAND "${CUBS2_RUMOCA_PYTHON}"
-            "${_codegen_script}"
+            "-c"
+            "from pathlib import Path; import sys; import rumoca as rum; model_file, model_name, target, output = sys.argv[1:5]; Path(output).mkdir(parents=True, exist_ok=True); generated = rum.Session().codegen_file(model_file, model_name, target, output); [print(f'wrote {path}') for path in generated]"
             "${_model_file}"
-            --model "${model_name}"
-            --target "galec-production"
-            --output "${_efmu_dir}"
+            "${model_name}"
+            "galec-production"
+            "${_efmu_dir}"
     COMMAND ${CMAKE_COMMAND} -E touch "${_stamp}"
     DEPENDS
       ${_model_file}
-      ${_codegen_script}
     COMMENT "Generating ${model_name} eFMI Production Code with Rumoca Python binding"
     VERBATIM
   )

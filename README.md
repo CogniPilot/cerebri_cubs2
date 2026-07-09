@@ -8,7 +8,7 @@ piloted aircraft.
 The board is an Ethernet/Zenoh control node:
 
 - subscribe to `synapse/v1/topic/manual_control_command`
-- subscribe to `synapse/v1/topic/mocap_frame`
+- subscribe to `synapse/v1/topic/external_odometry`
 - mirror inbound payloads from csyn into zros
 - run the Rumoca-generated fixed-wing eFMI controller from zros state
 - publish `synapse/v1/topic/pwm_signal_outputs`
@@ -47,9 +47,8 @@ west build -b mr_vmu_tropic cerebri_cubs2
 The csyn module downloads the pinned `synapse_fbs-c.tar.gz` release asset
 and uses the generated C headers from that release, so the schema version is
 locked by csyn rather than per app. No local `flatc` install is required.
-Inbound `ManualControlData` is a fixed-layout struct payload, `MocapFrame`
-remains a FlatBuffer table, and all outbound topics are fixed-layout struct
-payloads.
+Inbound `ManualControlData` and `ExternalOdometryData` are fixed-layout struct
+payloads, and all outbound topics are fixed-layout struct payloads.
 
 Modelica code generation and SIL simulation run through the Rumoca Python
 binding. The Nix environment pins the Rumoca `v0.9.13` wheel and exports
@@ -101,23 +100,18 @@ nix run .#native-sim-sil-test
 
 The native-sim SIL runner starts `zenohd` on `udp/127.0.0.1:7447`, launches
 `build-native_sim/zephyr/zephyr.exe`, and passes
-`tests/zephyr/rumoca-scenario.native-sim.toml` to the Rumoca Python scenario
-runner. The TOML owns the lockstep, Zenoh, schema, publish/subscribe, debug log,
-physics, and solver setup. The bridge translates between the Rumoca-facing
-FlatBuffer topics and real Synapse topics, then writes CSV, PNG, Markdown, and
-HTML artifacts that grade route laps, altitude, velocity, bank, pitch, and
-crosstrack tracking.
-
-This native-sim path requires a Rumoca Python release that exposes the
-interactive TOML scenario runner. Rumoca `0.9.13` can load scenario TOMLs for
-batch `model.simulate(...)`, but does not expose the lockstep/transport runner
-needed for this test yet.
+`tests/zephyr/rumoca-scenario.native-sim.toml` to the Rumoca Python
+`Session.run_scenario(...)` path. The TOML owns the lockstep, Zenoh, schema,
+publish/subscribe, debug log, physics, and solver setup. The bridge translates
+the Rumoca-facing pose/twist sample into fixed-layout Synapse external odometry,
+then writes CSV, PNG, Markdown, and HTML artifacts that grade route laps,
+altitude, velocity, bank, pitch, and crosstrack tracking.
 
 The same traffic is inspectable from another terminal while the test is
 running:
 
 ```sh
-nix develop -c csyn --connect udp/127.0.0.1:7447 topic echo mocap_frame
+nix develop -c csyn --connect udp/127.0.0.1:7447 topic echo external_odometry
 nix develop -c csyn --connect udp/127.0.0.1:7447 topic hz pwm_signal_outputs
 nix develop -c csyn --connect udp/127.0.0.1:7447 topic echo attitude_command
 ```

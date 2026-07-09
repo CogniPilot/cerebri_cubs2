@@ -244,19 +244,17 @@ block StateEstimator
 
   input Real position_m[3];
   input Real euler_rad[3];
+  input Real velocity_m_s[3];
+  input Real eulerRate_rad_s[3];
   discrete output FlightState estimate = FlightState();
 
 protected
   discrete Boolean started(start = false);
-  discrete Real previousPosition_m[3](each start = 0.0);
-  discrete Real previousEuler_rad[3](each start = 0.0);
   discrete Real previousFilteredSpeed(start = 0.0);
-  discrete Real rawVelocity_m_s[3];
-  discrete Real rawEulerRate_rad_s[3];
   discrete Real wrappedEulerDelta_rad[3];
   discrete Real filteredEulerDelta_rad[3];
-  discrete Real rawSpeed;
-  discrete Real rawFlightPathAngle;
+  discrete Real measuredSpeed;
+  discrete Real measuredFlightPathAngle;
   discrete Real filterSampleWeight;
 
 algorithm
@@ -268,23 +266,21 @@ algorithm
     if not pre(started) then
       estimate.position_m := position_m;
       estimate.euler_rad := euler_rad;
-      estimate.velocity_m_s := zero3;
-      estimate.eulerRate_rad_s := zero3;
-      estimate.speed := 0.0;
-      estimate.flightPathAngle := 0.0;
+      estimate.velocity_m_s := velocity_m_s;
+      estimate.eulerRate_rad_s := eulerRate_rad_s;
+      estimate.speed := vectorNorm3(velocity_m_s);
+      estimate.flightPathAngle :=
+        asin(clip(velocity_m_s[3] / max(estimate.speed, 1e-5), -1.0, 1.0));
       estimate.acceleration_m_s2 := 0.0;
       started := true;
     else
       for i in 1:3 loop
-        rawVelocity_m_s[i] := (position_m[i] - pre(previousPosition_m[i])) / dt;
-        rawEulerRate_rad_s[i] :=
-          wrapAngle(euler_rad[i] - pre(previousEuler_rad[i])) / dt;
         wrappedEulerDelta_rad[i] := wrapAngle(euler_rad[i] - pre(estimate.euler_rad[i]));
       end for;
 
-      rawSpeed := vectorNorm3(rawVelocity_m_s);
-      rawFlightPathAngle :=
-        asin(clip(rawVelocity_m_s[3] / max(rawSpeed, 1e-5), -1.0, 1.0));
+      measuredSpeed := vectorNorm3(velocity_m_s);
+      measuredFlightPathAngle :=
+        asin(clip(velocity_m_s[3] / max(measuredSpeed, 1e-5), -1.0, 1.0));
 
       estimate.position_m :=
         lowPass(position_m, pre(estimate.position_m), filterSampleWeight);
@@ -295,20 +291,18 @@ algorithm
           wrapAngle(pre(estimate.euler_rad[i]) + filteredEulerDelta_rad[i]);
       end for;
       estimate.velocity_m_s :=
-        lowPass(rawVelocity_m_s, pre(estimate.velocity_m_s), filterSampleWeight);
+        lowPass(velocity_m_s, pre(estimate.velocity_m_s), filterSampleWeight);
       estimate.eulerRate_rad_s :=
-        lowPass(rawEulerRate_rad_s, pre(estimate.eulerRate_rad_s), filterSampleWeight);
-      estimate.speed := lowPassScalar(rawSpeed, pre(estimate.speed), filterSampleWeight);
+        lowPass(eulerRate_rad_s, pre(estimate.eulerRate_rad_s), filterSampleWeight);
+      estimate.speed := lowPassScalar(measuredSpeed, pre(estimate.speed), filterSampleWeight);
       estimate.flightPathAngle :=
-        lowPassScalar(rawFlightPathAngle,
+        lowPassScalar(measuredFlightPathAngle,
                       pre(estimate.flightPathAngle),
                       filterSampleWeight);
       estimate.acceleration_m_s2 :=
         (estimate.speed - pre(previousFilteredSpeed)) / dt;
     end if;
 
-    previousPosition_m := position_m;
-    previousEuler_rad := euler_rad;
     previousFilteredSpeed := estimate.speed;
   end when;
 end StateEstimator;
@@ -634,6 +628,8 @@ model FixedWingOuterLoop
 
   input Real position_m[3](each unit = "m") "current sample [x, y, z] [m]";
   input Real euler_rad[3](each unit = "rad") "current sample [roll, pitch, yaw] [rad]";
+  input Real velocity_m_s[3](each unit = "m/s") "current velocity sample [x, y, z] [m/s]";
+  input Real eulerRate_rad_s[3](each unit = "rad/s") "current body-rate sample [roll, pitch, yaw] [rad/s]";
 
   discrete output Real aileron(start = 0.0) "aileron stick [-1, 1]";
   discrete output Real elevator(start = 0.0) "elevator stick [-1, 1]";
@@ -660,6 +656,8 @@ algorithm
   when sample(0.0, dt) then
     estimator.position_m := position_m;
     estimator.euler_rad := euler_rad;
+    estimator.velocity_m_s := velocity_m_s;
+    estimator.eulerRate_rad_s := eulerRate_rad_s;
 
     airborne := pre(airborne) or (position_m[3] > attitudeParams.takeoffAltitude);
     guidance.airborne := airborne;
