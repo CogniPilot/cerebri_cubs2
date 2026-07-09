@@ -1,5 +1,5 @@
 source_roots = [
-  "../../models/vendor/CMM-v0.0.2",
+  "../../../models/vendor/CMM-v0.0.2",
   "../../models/plant",
 ]
 
@@ -31,47 +31,50 @@ mode = "client"
 endpoint = "udp/127.0.0.1:7447"
 
 [publish]
-send = "cubs2/sil/external_odometry_sample"
+send = "cubs2/sil/external_odometry"
 
 [subscribe]
-receive = "cubs2/sil/pwm_outputs"
+receive = "cubs2/sil/pwm_signal_outputs"
 
 [schema]
-bfbs = ["artifacts/native-sim-sil/native_sil_io.bfbs"]
+bfbs = ["build-native_sim/_deps/synapse_fbs_c-src/bfbs/all.bfbs"]
 
 [send]
-root_type = "cubs2.sil.ExternalOdometrySample"
+root_type = "synapse.topic.ExternalOdometry"
 
 [send.route]
-timestamp_us = "odometry_timestamp_us"
-x_m = "odometry_x_m"
-y_m = "odometry_y_m"
-z_m = "odometry_z_m"
-qw = "odometry_qw"
-qx = "odometry_qx"
-qy = "odometry_qy"
-qz = "odometry_qz"
-vx_m_s = "odometry_vx_m_s"
-vy_m_s = "odometry_vy_m_s"
-vz_m_s = "odometry_vz_m_s"
-roll_rate_rad_s = "odometry_roll_rate_rad_s"
-pitch_rate_rad_s = "odometry_pitch_rate_rad_s"
-yaw_rate_rad_s = "odometry_yaw_rate_rad_s"
-tracking_valid = "odometry_tracking_valid"
+"data.timestamp_us" = "odometry_timestamp_us"
+"data.position_enu_m.x" = "odometry_x_m"
+"data.position_enu_m.y" = "odometry_y_m"
+"data.position_enu_m.z" = "odometry_z_m"
+"data.attitude.w" = "odometry_qw"
+"data.attitude.x" = "odometry_qx"
+"data.attitude.y" = "odometry_qy"
+"data.attitude.z" = "odometry_qz"
+"data.linear_velocity_enu_m_s.x" = "odometry_vx_m_s"
+"data.linear_velocity_enu_m_s.y" = "odometry_vy_m_s"
+"data.linear_velocity_enu_m_s.z" = "odometry_vz_m_s"
+"data.angular_velocity_flu_rad_s.roll" = "odometry_roll_rate_rad_s"
+"data.angular_velocity_flu_rad_s.pitch" = "odometry_pitch_rate_rad_s"
+"data.angular_velocity_flu_rad_s.yaw" = "odometry_yaw_rate_rad_s"
+"data.flags" = "odometry_flags"
+"data.status" = "odometry_status"
+"data.source_id" = "odometry_source_id"
+"data.id" = "odometry_id"
 
 [receive]
-root_type = "cubs2.sil.PwmOutputs"
+root_type = "synapse.topic.PwmSignalOutputs"
 
 [receive.route]
-output0_us = "model:pwm0_us"
-output1_us = "model:pwm1_us"
-output2_us = "model:pwm2_us"
-output3_us = "model:pwm3_us"
-output4_us = "model:pwm4_us"
-output5_us = "model:pwm5_us"
-output6_us = "model:pwm6_us"
-output7_us = "model:pwm7_us"
-output8_us = "model:pwm8_us"
+"data.output0_us" = "model:pwm0_us"
+"data.output1_us" = "model:pwm1_us"
+"data.output2_us" = "model:pwm2_us"
+"data.output3_us" = "model:pwm3_us"
+"data.output4_us" = "model:pwm4_us"
+"data.output5_us" = "model:pwm5_us"
+"data.output6_us" = "model:pwm6_us"
+"data.output7_us" = "model:pwm7_us"
+"data.output8_us" = "model:pwm8_us"
 
 [signals.send]
 odometry_timestamp_us = "model:odometry_timestamp_us"
@@ -88,7 +91,10 @@ odometry_vz_m_s = "model:odometry_vz_m_s"
 odometry_roll_rate_rad_s = "model:odometry_roll_rate_rad_s"
 odometry_pitch_rate_rad_s = "model:odometry_pitch_rate_rad_s"
 odometry_yaw_rate_rad_s = "model:odometry_yaw_rate_rad_s"
-odometry_tracking_valid = "model:odometry_tracking_valid"
+odometry_flags = "model:odometry_flags"
+odometry_status = "model:odometry_status"
+odometry_source_id = "model:odometry_source_id"
+odometry_id = "model:odometry_id"
 
 [debug_log]
 ring_size = 8192

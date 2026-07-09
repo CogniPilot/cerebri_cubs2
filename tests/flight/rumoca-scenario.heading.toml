@@ -1,5 +1,5 @@
 source_roots = [
-  "../../models/vendor/CMM-v0.0.2",
+  "../../../models/vendor/CMM-v0.0.2",
   "../../models/plant/SportCubSIL.mo",
   "../../models/plant/FixedWingSIL.mo",
   "../../src/FixedWingOuterLoop.mo",
