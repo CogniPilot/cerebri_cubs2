@@ -136,6 +136,8 @@ equation
 
   outerLoop.position_m = vehicle.position;
   outerLoop.euler_rad = euler_rad;
+  outerLoop.velocity_m_s = vehicle.velocity;
+  outerLoop.eulerRate_rad_s = vehicle.gyro;
 
   innerLoop.armed = 1.0;
   innerLoop.stick_roll = outerLoop.aileron;
@@ -210,6 +212,8 @@ equation
 
   outerLoop.position_m = vehicle.position;
   outerLoop.euler_rad = euler_rad;
+  outerLoop.velocity_m_s = vehicle.velocity;
+  outerLoop.eulerRate_rad_s = vehicle.gyro;
 
   innerLoop.armed = 1.0;
   innerLoop.stick_roll = outerLoop.aileron;
@@ -303,6 +307,8 @@ equation
 
   outerLoop.position_m = vehicle.position;
   outerLoop.euler_rad = euler_rad;
+  outerLoop.velocity_m_s = vehicle.velocity;
+  outerLoop.eulerRate_rad_s = vehicle.gyro;
 
   innerLoop.armed = if landing and vehicle.position[3] < 0.4 then 0.0 else 1.0;
   innerLoop.stick_roll = if landing then 0.0 else outerLoop.aileron;

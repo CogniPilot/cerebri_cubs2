@@ -23,7 +23,7 @@ LOG_MODULE_REGISTER(cubs2, LOG_LEVEL_INF);
 #define CUBS2_CONTROL_PERIOD_US (CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS / 1000U)
 
 struct control_context {
-	struct csyn_mocap_rigid_body mocap;
+	synapse_topic_ExternalOdometryData_t external_odometry;
 	struct csyn_manual_control manual;
 	csyn_rc_channels16_t control_rc;
 	synapse_topic_PwmSignalOutputsData_t pwm_outputs;
@@ -31,7 +31,7 @@ struct control_context {
 	synapse_topic_AttitudeEstimateData_t attitude_estimate;
 	synapse_topic_AttitudeCommandData_t attitude_command;
 	synapse_topic_ControlLoopMetricsData_t control_loop_metrics;
-	uint32_t mocap_generation;
+	uint32_t external_odometry_generation;
 	uint32_t manual_generation;
 	uint32_t main_loop_us;
 	bool previous_auto_mode;
@@ -46,19 +46,19 @@ static struct zros_pub g_attitude_estimate_pub;
 static struct zros_pub g_attitude_command_pub;
 static struct zros_pub g_control_loop_metrics_pub;
 
-static bool read_mocap_if_updated(struct control_context *ctx)
+static bool read_external_odometry_if_updated(struct control_context *ctx)
 {
-	uint32_t generation = csyn_zros_generation(&topic_mocap);
+	uint32_t generation = csyn_zros_generation(&topic_external_odometry);
 
-	if (generation == 0U || generation == ctx->mocap_generation) {
+	if (generation == 0U || generation == ctx->external_odometry_generation) {
 		return false;
 	}
 
-	if (zros_topic_read(&topic_mocap, &ctx->mocap) != 0) {
+	if (zros_topic_read(&topic_external_odometry, &ctx->external_odometry) != 0) {
 		return false;
 	}
 
-	ctx->mocap_generation = generation;
+	ctx->external_odometry_generation = generation;
 	return true;
 }
 
@@ -78,31 +78,43 @@ static bool read_manual_if_updated(struct control_context *ctx)
 	return true;
 }
 
+static bool external_odometry_valid(const synapse_topic_ExternalOdometryData_t *odom)
+{
+	const uint32_t required = synapse_topic_ExternalOdometryFlags_PositionValid |
+				  synapse_topic_ExternalOdometryFlags_AttitudeValid |
+				  synapse_topic_ExternalOdometryFlags_LinearVelocityValid |
+				  synapse_topic_ExternalOdometryFlags_AngularVelocityValid;
+	const uint32_t reject = synapse_topic_ExternalOdometryFlags_OutlierRejected |
+				synapse_topic_ExternalOdometryFlags_Lost;
+	uint32_t flags = odom->flags;
+
+	return (flags & required) == required && (flags & reject) == 0U &&
+	       odom->status != synapse_topic_ExternalOdometryStatus_Lost &&
+	       odom->status != synapse_topic_ExternalOdometryStatus_OutlierRejected;
+}
+
 static void fixed_wing_map_input(FixedWingOuterLoopState *model,
-				 const struct csyn_mocap_rigid_body *mocap)
+				 const synapse_topic_ExternalOdometryData_t *odom)
 {
 	float roll = 0.0f;
 	float pitch = 0.0f;
 	float yaw = 0.0f;
 
-	if (mocap->valid) {
-		synapse_types_Quaternionf_t quat = {
-			.w = mocap->qw,
-			.x = mocap->qx,
-			.y = mocap->qy,
-			.z = mocap->qz,
-		};
+	/* FixedWingOuterLoop consumes Euler [roll, pitch, yaw] in radians. */
+	csyn_euler_from_quatf(&odom->attitude, &roll, &pitch, &yaw);
 
-		/* FixedWingOuterLoop consumes Euler [roll, pitch, yaw] in radians. */
-		csyn_euler_from_quatf(&quat, &roll, &pitch, &yaw);
-	}
-
-	model->position_m[0] = mocap->x;
-	model->position_m[1] = mocap->y;
-	model->position_m[2] = mocap->z;
+	model->position_m[0] = odom->position_enu_m.x;
+	model->position_m[1] = odom->position_enu_m.y;
+	model->position_m[2] = odom->position_enu_m.z;
 	model->euler_rad[0] = roll;
 	model->euler_rad[1] = pitch;
 	model->euler_rad[2] = yaw;
+	model->velocity_m_s[0] = odom->linear_velocity_enu_m_s.x;
+	model->velocity_m_s[1] = odom->linear_velocity_enu_m_s.y;
+	model->velocity_m_s[2] = odom->linear_velocity_enu_m_s.z;
+	model->eulerRate_rad_s[0] = odom->angular_velocity_flu_rad_s.roll;
+	model->eulerRate_rad_s[1] = odom->angular_velocity_flu_rad_s.pitch;
+	model->eulerRate_rad_s[2] = odom->angular_velocity_flu_rad_s.yaw;
 }
 
 static void fixed_wing_map_output(const FixedWingOuterLoopState *model,
@@ -259,7 +271,7 @@ int main(void)
 		csyn_rc_channels16_t auto_rc = {0};
 		bool auto_mode;
 
-		(void)read_mocap_if_updated(ctx);
+		(void)read_external_odometry_if_updated(ctx);
 		(void)read_manual_if_updated(ctx);
 
 		auto_mode = auto_mode_selected(ctx);
@@ -270,8 +282,8 @@ int main(void)
 		ctx->previous_auto_mode = auto_mode;
 
 		if (auto_mode) {
-			if (ctx->mocap.valid) {
-				fixed_wing_map_input(&g_model, &ctx->mocap);
+			if (external_odometry_valid(&ctx->external_odometry)) {
+				fixed_wing_map_input(&g_model, &ctx->external_odometry);
 				EFMI_STEP(FixedWingOuterLoop, &g_model);
 				fixed_wing_map_output(&g_model, &auto_rc);
 			} else {

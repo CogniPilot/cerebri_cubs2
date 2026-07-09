@@ -21,7 +21,6 @@ import threading
 import time
 from typing import Iterable
 
-import flatbuffers
 import matplotlib
 import numpy as np
 import zenoh
@@ -32,10 +31,10 @@ import matplotlib.pyplot as plt
 
 ROOT = Path(__file__).resolve().parents[2]
 
-SYNAPSE_MOCAP_TOPIC = "synapse/v1/topic/mocap_frame"
+SYNAPSE_EXTERNAL_ODOMETRY_TOPIC = "synapse/v1/topic/external_odometry"
 SYNAPSE_PWM_TOPIC = "synapse/v1/topic/pwm_signal_outputs"
 SYNAPSE_ATTITUDE_COMMAND_TOPIC = "synapse/v1/topic/attitude_command"
-RUMOCA_MOCAP_TOPIC = "cubs2/sil/mocap_sample"
+RUMOCA_EXTERNAL_ODOMETRY_TOPIC = "cubs2/sil/external_odometry_sample"
 RUMOCA_PWM_TOPIC = "cubs2/sil/pwm_outputs"
 
 NATIVE_IO_SCHEMA = ROOT / "tests" / "zephyr" / "native_sil_io.fbs"
@@ -49,6 +48,10 @@ RUMOCA_RUN_SCENARIO_CODE = "import sys; import rumoca as rum; rum.Session().run_
 
 PWM_STRUCT = struct.Struct("<QIBx16H2x")
 ATTITUDE_COMMAND_STRUCT = struct.Struct("<Q4f3ffB7x")
+EXTERNAL_ODOMETRY_STRUCT = struct.Struct("<Q3f4f3f3fBBBB")
+EXTERNAL_ODOMETRY_FLAGS_VALID = 0x0F
+EXTERNAL_ODOMETRY_STATUS_FILTERED = 1
+EXTERNAL_ODOMETRY_STATUS_LOST = 4
 
 ROUTE_WAYPOINTS = [
     (0.0, 0.0, 0.0),
@@ -62,9 +65,8 @@ ROUTE_WAYPOINTS = [
 
 
 @dataclass
-class MocapSample:
+class ExternalOdometrySample:
     timestamp_us: int
-    frame_number: int
     x_m: float
     y_m: float
     z_m: float
@@ -72,12 +74,18 @@ class MocapSample:
     qx: float
     qy: float
     qz: float
+    vx_m_s: float
+    vy_m_s: float
+    vz_m_s: float
+    roll_rate_rad_s: float
+    pitch_rate_rad_s: float
+    yaw_rate_rad_s: float
     tracking_valid: bool
 
 
 @dataclass
 class BridgeLog:
-    mocap_rows: list[dict[str, float | int | bool]]
+    odometry_rows: list[dict[str, float | int | bool]]
     pwm_rows: list[dict[str, float | int]]
     attitude_rows: list[dict[str, float | int]]
     error: Exception | None = None
@@ -243,50 +251,49 @@ def read_flatbuffer_field(buf: bytes, field_id: int, fmt: str, default: float | 
     return struct.unpack_from(fmt, buf, table + offset)[0]
 
 
-def decode_mocap_sample(payload: bytes) -> MocapSample:
-    return MocapSample(
+def decode_external_odometry_sample(payload: bytes) -> ExternalOdometrySample:
+    return ExternalOdometrySample(
         timestamp_us=int(read_flatbuffer_field(payload, 0, "<Q", 0)),
-        frame_number=int(read_flatbuffer_field(payload, 1, "<I", 0)),
-        x_m=float(read_flatbuffer_field(payload, 2, "<f", 0.0)),
-        y_m=float(read_flatbuffer_field(payload, 3, "<f", 0.0)),
-        z_m=float(read_flatbuffer_field(payload, 4, "<f", 0.0)),
-        qw=float(read_flatbuffer_field(payload, 5, "<f", 1.0)),
-        qx=float(read_flatbuffer_field(payload, 6, "<f", 0.0)),
-        qy=float(read_flatbuffer_field(payload, 7, "<f", 0.0)),
-        qz=float(read_flatbuffer_field(payload, 8, "<f", 0.0)),
-        tracking_valid=bool(read_flatbuffer_field(payload, 9, "<B", 0)),
+        x_m=float(read_flatbuffer_field(payload, 1, "<f", 0.0)),
+        y_m=float(read_flatbuffer_field(payload, 2, "<f", 0.0)),
+        z_m=float(read_flatbuffer_field(payload, 3, "<f", 0.0)),
+        qw=float(read_flatbuffer_field(payload, 4, "<f", 1.0)),
+        qx=float(read_flatbuffer_field(payload, 5, "<f", 0.0)),
+        qy=float(read_flatbuffer_field(payload, 6, "<f", 0.0)),
+        qz=float(read_flatbuffer_field(payload, 7, "<f", 0.0)),
+        vx_m_s=float(read_flatbuffer_field(payload, 8, "<f", 0.0)),
+        vy_m_s=float(read_flatbuffer_field(payload, 9, "<f", 0.0)),
+        vz_m_s=float(read_flatbuffer_field(payload, 10, "<f", 0.0)),
+        roll_rate_rad_s=float(read_flatbuffer_field(payload, 11, "<f", 0.0)),
+        pitch_rate_rad_s=float(read_flatbuffer_field(payload, 12, "<f", 0.0)),
+        yaw_rate_rad_s=float(read_flatbuffer_field(payload, 13, "<f", 0.0)),
+        tracking_valid=bool(read_flatbuffer_field(payload, 14, "<B", 0)),
     )
 
 
-def prepend_mocap_rigid_body_sample(builder: flatbuffers.Builder, sample: MocapSample) -> int:
-    builder.Prep(4, 40)
-    builder.Pad(3)
-    builder.PrependBool(sample.tracking_valid)
-    builder.PrependFloat32(0.0)
-    builder.PrependFloat32(sample.qz)
-    builder.PrependFloat32(sample.qy)
-    builder.PrependFloat32(sample.qx)
-    builder.PrependFloat32(sample.qw)
-    builder.PrependFloat32(sample.z_m)
-    builder.PrependFloat32(sample.y_m)
-    builder.PrependFloat32(sample.x_m)
-    builder.PrependInt32(1)
-    return builder.Offset()
-
-
-def pack_synapse_mocap_frame(sample: MocapSample) -> bytes:
-    builder = flatbuffers.Builder(128)
-    builder.StartVector(40, 1, 4)
-    prepend_mocap_rigid_body_sample(builder, sample)
-    rigid_bodies = builder.EndVector()
-
-    builder.StartObject(6)
-    builder.PrependUOffsetTRelativeSlot(4, rigid_bodies, 0)
-    builder.PrependUint32Slot(1, sample.frame_number, 0)
-    builder.PrependUint64Slot(0, sample.timestamp_us, 0)
-    frame = builder.EndObject()
-    builder.Finish(frame)
-    return bytes(builder.Output())
+def pack_synapse_external_odometry(sample: ExternalOdometrySample) -> bytes:
+    flags = EXTERNAL_ODOMETRY_FLAGS_VALID if sample.tracking_valid else 0
+    status = EXTERNAL_ODOMETRY_STATUS_FILTERED if sample.tracking_valid else EXTERNAL_ODOMETRY_STATUS_LOST
+    return EXTERNAL_ODOMETRY_STRUCT.pack(
+        sample.timestamp_us,
+        sample.x_m,
+        sample.y_m,
+        sample.z_m,
+        sample.qw,
+        sample.qx,
+        sample.qy,
+        sample.qz,
+        sample.vx_m_s,
+        sample.vy_m_s,
+        sample.vz_m_s,
+        sample.roll_rate_rad_s,
+        sample.pitch_rate_rad_s,
+        sample.yaw_rate_rad_s,
+        flags,
+        status,
+        0,
+        1,
+    )
 
 
 def decode_pwm_outputs(payload: bytes, sim_time_s: float) -> dict[str, float | int]:
@@ -390,37 +397,42 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
     session: zenoh.Session | None = None
     try:
         session = open_zenoh_session(locator, startup_timeout_s)
-        mocap_subscriber = session.declare_subscriber(RUMOCA_MOCAP_TOPIC)
+        odometry_subscriber = session.declare_subscriber(RUMOCA_EXTERNAL_ODOMETRY_TOPIC)
         pwm_subscriber = session.declare_subscriber(SYNAPSE_PWM_TOPIC)
         attitude_subscriber = session.declare_subscriber(SYNAPSE_ATTITUDE_COMMAND_TOPIC)
         latest_sim_time_s = 0.0
-        mocap_forwarded = False
+        odometry_forwarded = False
         control_forwarded = False
 
         while not stop.is_set():
             did_work = False
 
             while True:
-                sample = mocap_subscriber.try_recv()
+                sample = odometry_subscriber.try_recv()
                 if sample is None:
                     break
-                mocap = decode_mocap_sample(payload_bytes(sample))
-                latest_sim_time_s = mocap.timestamp_us / 1_000_000.0
-                session.put(SYNAPSE_MOCAP_TOPIC, pack_synapse_mocap_frame(mocap))
-                mocap_forwarded = True
-                logs.mocap_rows.append(
+                odometry = decode_external_odometry_sample(payload_bytes(sample))
+                latest_sim_time_s = odometry.timestamp_us / 1_000_000.0
+                session.put(SYNAPSE_EXTERNAL_ODOMETRY_TOPIC, pack_synapse_external_odometry(odometry))
+                odometry_forwarded = True
+                logs.odometry_rows.append(
                     {
                         "sim_time_s": latest_sim_time_s,
-                        "timestamp_us": mocap.timestamp_us,
-                        "frame_number": mocap.frame_number,
-                        "x_m": mocap.x_m,
-                        "y_m": mocap.y_m,
-                        "z_m": mocap.z_m,
-                        "qw": mocap.qw,
-                        "qx": mocap.qx,
-                        "qy": mocap.qy,
-                        "qz": mocap.qz,
-                        "tracking_valid": mocap.tracking_valid,
+                        "timestamp_us": odometry.timestamp_us,
+                        "x_m": odometry.x_m,
+                        "y_m": odometry.y_m,
+                        "z_m": odometry.z_m,
+                        "qw": odometry.qw,
+                        "qx": odometry.qx,
+                        "qy": odometry.qy,
+                        "qz": odometry.qz,
+                        "vx_m_s": odometry.vx_m_s,
+                        "vy_m_s": odometry.vy_m_s,
+                        "vz_m_s": odometry.vz_m_s,
+                        "roll_rate_rad_s": odometry.roll_rate_rad_s,
+                        "pitch_rate_rad_s": odometry.pitch_rate_rad_s,
+                        "yaw_rate_rad_s": odometry.yaw_rate_rad_s,
+                        "tracking_valid": odometry.tracking_valid,
                     }
                 )
                 did_work = True
@@ -431,7 +443,7 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
                     break
                 row = decode_pwm_outputs(payload_bytes(sample), latest_sim_time_s)
                 real_control = int(row["output2_us"]) > 1100 or int(row["output6_us"]) > 1000
-                forward_to_plant = control_forwarded or (mocap_forwarded and real_control)
+                forward_to_plant = control_forwarded or (odometry_forwarded and real_control)
                 row["forwarded_to_plant"] = int(forward_to_plant)
                 if forward_to_plant:
                     session.put(RUMOCA_PWM_TOPIC, pack_rumoca_pwm_outputs(row))
@@ -771,7 +783,7 @@ def flight_metrics(rows: list[dict[str, float]], logs: BridgeLog) -> dict[str, f
     mean_speed = float(np.mean(values(tracking_rows, "airspeed_m_s")))
     mean_speed_error = float(np.mean(np.abs(np.array(values(tracking_rows, "airspeed_m_s")) - np.array(values(tracking_rows, "speed_cmd_m_s")))))
     return {
-        "mocap_samples": len(logs.mocap_rows),
+        "external_odometry_samples": len(logs.odometry_rows),
         "pwm_samples": len(logs.pwm_rows),
         "attitude_command_samples": len(logs.attitude_rows),
         "duration_s": rows[-1]["time_s"] if rows else 0.0,
@@ -792,7 +804,11 @@ def run_checks(metrics: dict[str, float | int]) -> list[tuple[str, str, str]]:
         return "PASS" if ok else "WARN"
 
     checks = [
-        ("mocap published", int(metrics["mocap_samples"]) > 100, f"{metrics['mocap_samples']} samples"),
+        (
+            "external odometry published",
+            int(metrics["external_odometry_samples"]) > 100,
+            f"{metrics['external_odometry_samples']} samples",
+        ),
         ("pwm received", int(metrics["pwm_samples"]) > 50, f"{metrics['pwm_samples']} samples"),
         (
             "attitude command received",
@@ -861,12 +877,12 @@ def write_reports(
     lines = [
         "# CUBS2 Zephyr Native SIL",
         "",
-        "This run uses the Zephyr `native_sim` binary, Rumoca/CMM SportCub plant dynamics, and real Synapse Zenoh topics. The bridge publishes a real `MocapFrame` table on `synapse/v1/topic/mocap_frame` and consumes the app's fixed-layout `pwm_signal_outputs` and `attitude_command` topics.",
+        "This run uses the Zephyr `native_sim` binary, Rumoca/CMM SportCub plant dynamics, and real Synapse Zenoh topics. The bridge publishes compact fixed-layout `ExternalOdometryData` on `synapse/v1/topic/external_odometry` and consumes the app's fixed-layout `pwm_signal_outputs` and `attitude_command` topics.",
         "",
         "While this test is running, the same traffic can be inspected with:",
         "",
         "```sh",
-        "csyn --connect udp/127.0.0.1:7447 topic echo mocap_frame",
+        "csyn --connect udp/127.0.0.1:7447 topic echo external_odometry",
         "csyn --connect udp/127.0.0.1:7447 topic hz pwm_signal_outputs",
         "csyn --connect udp/127.0.0.1:7447 topic echo attitude_command",
         "```",
@@ -938,7 +954,7 @@ def main() -> int:
     sim_log = artifact_dir / "native-sim.log"
     rumoca_log = artifact_dir / "rumoca.log"
     plant_csv = artifact_dir / "native-sim-plant.csv"
-    mocap_csv = artifact_dir / "native-sim-mocap.csv"
+    odometry_csv = artifact_dir / "native-sim-external-odometry.csv"
     pwm_csv = artifact_dir / "native-sim-pwm.csv"
     attitude_csv = artifact_dir / "native-sim-attitude-command.csv"
     merged_csv = artifact_dir / "native-sim-flight.csv"
@@ -951,7 +967,7 @@ def main() -> int:
     zephyr: subprocess.Popen[bytes] | None = None
     rumoca_process: subprocess.Popen[bytes] | None = None
     stop_bridge = threading.Event()
-    bridge_log = BridgeLog(mocap_rows=[], pwm_rows=[], attitude_rows=[])
+    bridge_log = BridgeLog(odometry_rows=[], pwm_rows=[], attitude_rows=[])
     bridge_thread: threading.Thread | None = None
 
     try:
@@ -995,7 +1011,7 @@ def main() -> int:
         if bridge_log.error is not None:
             raise RuntimeError(f"native SIL bridge failed: {bridge_log.error}")
 
-        write_csv(mocap_csv, bridge_log.mocap_rows)
+        write_csv(odometry_csv, bridge_log.odometry_rows)
         write_csv(pwm_csv, bridge_log.pwm_rows)
         write_csv(attitude_csv, bridge_log.attitude_rows)
 

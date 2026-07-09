@@ -1,10 +1,9 @@
 namespace cubs2.sil;
 
-// Rumoca-facing scalar mocap sample. The test harness translates this into
-// the real Synapse MocapFrame table on synapse/v1/topic/mocap_frame.
-table MocapSample {
+// Rumoca-facing scalar pose/twist sample. The test harness translates this
+// into the compact Synapse ExternalOdometryData payload.
+table ExternalOdometrySample {
   timestamp_us:ulong;
-  frame_number:uint;
   x_m:float;
   y_m:float;
   z_m:float;
@@ -12,6 +11,12 @@ table MocapSample {
   qx:float;
   qy:float;
   qz:float;
+  vx_m_s:float;
+  vy_m_s:float;
+  vz_m_s:float;
+  roll_rate_rad_s:float;
+  pitch_rate_rad_s:float;
+  yaw_rate_rad_s:float;
   tracking_valid:bool;
 }
 
@@ -39,4 +44,4 @@ table PwmOutputs {
   output15_us:ushort;
 }
 
-root_type MocapSample;
+root_type ExternalOdometrySample;
