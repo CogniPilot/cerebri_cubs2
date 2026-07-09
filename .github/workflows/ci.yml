@@ -75,19 +75,6 @@ jobs:
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
 
-      - name: Prefer GitHub Nix cache
-        run: |
-          # magic-nix-cache-action v14 probes this netrc path before attempting
-          # FlakeHub auth. The FlakeHub cache is disabled below, so an empty
-          # file avoids an unnecessary FlakeHub ID-token request.
-          install -m 0600 /dev/null "$RUNNER_TEMP/determinate-nix-installer-netrc"
-
-      - name: Cache Nix builds
-        uses: DeterminateSystems/magic-nix-cache-action@v14
-        with:
-          use-flakehub: disabled
-          use-gha-cache: enabled
-
       - name: Run Rumoca fmt/lint
         working-directory: cerebri_cubs2
         run: nix $NIX_FLAGS run .#rumoca-check
@@ -123,19 +110,6 @@ jobs:
 
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
-
-      - name: Prefer GitHub Nix cache
-        run: |
-          # magic-nix-cache-action v14 probes this netrc path before attempting
-          # FlakeHub auth. The FlakeHub cache is disabled below, so an empty
-          # file avoids an unnecessary FlakeHub ID-token request.
-          install -m 0600 /dev/null "$RUNNER_TEMP/determinate-nix-installer-netrc"
-
-      - name: Cache Nix builds
-        uses: DeterminateSystems/magic-nix-cache-action@v14
-        with:
-          use-flakehub: disabled
-          use-gha-cache: enabled
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
@@ -194,19 +168,6 @@ jobs:
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
 
-      - name: Prefer GitHub Nix cache
-        run: |
-          # magic-nix-cache-action v14 probes this netrc path before attempting
-          # FlakeHub auth. The FlakeHub cache is disabled below, so an empty
-          # file avoids an unnecessary FlakeHub ID-token request.
-          install -m 0600 /dev/null "$RUNNER_TEMP/determinate-nix-installer-netrc"
-
-      - name: Cache Nix builds
-        uses: DeterminateSystems/magic-nix-cache-action@v14
-        with:
-          use-flakehub: disabled
-          use-gha-cache: enabled
-
       - name: Update west workspace
         working-directory: cerebri_cubs2
         run: nix $NIX_FLAGS run .#west-update
@@ -263,19 +224,6 @@ jobs:
 
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
-
-      - name: Prefer GitHub Nix cache
-        run: |
-          # magic-nix-cache-action v14 probes this netrc path before attempting
-          # FlakeHub auth. The FlakeHub cache is disabled below, so an empty
-          # file avoids an unnecessary FlakeHub ID-token request.
-          install -m 0600 /dev/null "$RUNNER_TEMP/determinate-nix-installer-netrc"
-
-      - name: Cache Nix builds
-        uses: DeterminateSystems/magic-nix-cache-action@v14
-        with:
-          use-flakehub: disabled
-          use-gha-cache: enabled
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
