@@ -109,7 +109,7 @@ end horizontalDisplacement;
 
 record VehicleParameters
   Real g(unit = "m/s2") = 9.81 "standard gravity";
-  Real mass(unit = "kg") = 0.063 "FixedWingPlant.vehicle_mass";
+  Real mass(unit = "kg") = 0.065 "SportCubPlant.vehicle_mass";
   Real thrustMax(unit = "N") = 0.30 "FixedWingPlant.thr_max";
   Real trimThrust(unit = "N") = 0.1 "cruise drag at 4.3 m/s";
   Real envelopeDrag(unit = "N") = 0.07 "cruise drag";
@@ -589,7 +589,7 @@ algorithm
 
       course := atan2(estimate.velocity_m_s[2], estimate.velocity_m_s[1]);
       courseError := -wrapAngle(setpoints.heading - course);
-      if abs(courseError) < params.courseDeadband then
+      if courseError * courseError < params.courseDeadband * params.courseDeadband then
         courseError := 0.0;
       end if;
       headingErrorRate := wrapAngle(courseError - pre(courseError)) / dt;

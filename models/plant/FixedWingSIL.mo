@@ -147,8 +147,8 @@ equation
   // --- wind-frame axes from velocity (branch-free Gram-Schmidt, cubs2) ---
   wx1 = U/Vt; wx2 = V_frd/Vt; wx3 = W_frd/Vt;
   // reference = body axis most perpendicular to velocity (avoids singularity)
-  refx = if abs(wx3) < abs(wx1) then 0 else 1;
-  refz = if abs(wx3) < abs(wx1) then 1 else 0;
+  refx = if wx3 * wx3 < wx1 * wx1 then 0 else 1;
+  refz = if wx3 * wx3 < wx1 * wx1 then 1 else 0;
   rdot = refx*wx1 + refz*wx3;
   wzt1 = refx - rdot*wx1;
   wzt2 = -rdot*wx2;
