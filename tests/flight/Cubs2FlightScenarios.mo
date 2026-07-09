@@ -93,9 +93,6 @@ end Cubs2TakeoffOpenLoop;
 
 model Cubs2AltitudeHold
   parameter Real targetAltitude_m = 3.0;
-  parameter VehicleParameters vehicleParams =
-    VehicleParameters(mass = 0.065, thrustMax = 0.30,
-                      trimThrust = 0.10, envelopeDrag = 0.07);
   parameter RouteParameters straightRoute =
     RouteParameters(
       nSegments = 6,
@@ -117,7 +114,7 @@ model Cubs2AltitudeHold
     v_b_start = {4.0, 0.0, 0.0}
   );
   Cubs2InnerLoop innerLoop;
-  FixedWingOuterLoop outerLoop(vehicle = vehicleParams, route = straightRoute);
+  FixedWingOuterLoop outerLoop(route = straightRoute);
 
   output Real time_s;
   output Real x_m;
@@ -157,19 +154,15 @@ equation
   x_m = vehicle.position[1];
   y_m = vehicle.position[2];
   z_m = vehicle.position[3];
-  altitude_error_m = outerLoop.guidance.pathAltitude - z_m;
+  altitude_error_m = targetAltitude_m - z_m;
   airspeed_m_s = vehicle.airspeed;
   pitch_cmd = innerLoop.stick_pitch;
   throttle_cmd = innerLoop.stick_throttle;
 end Cubs2AltitudeHold;
 
 model Cubs2HeadingHold
-  parameter Real targetHeading_rad = 0.0;
   parameter Real targetSpeed_m_s = 4.0;
   parameter Real targetAltitude_m = 3.0;
-  parameter VehicleParameters vehicleParams =
-    VehicleParameters(mass = 0.065, thrustMax = 0.30,
-                      trimThrust = 0.10, envelopeDrag = 0.07);
   parameter RouteParameters straightRoute =
     RouteParameters(
       nSegments = 6,
@@ -192,7 +185,7 @@ model Cubs2HeadingHold
     q_start = {0.9689124217106447, 0.0, 0.0, -0.24740395925452294}
   );
   Cubs2InnerLoop innerLoop;
-  FixedWingOuterLoop outerLoop(vehicle = vehicleParams, route = straightRoute);
+  FixedWingOuterLoop outerLoop(route = straightRoute);
 
   output Real time_s;
   output Real x_m;
@@ -241,9 +234,6 @@ equation
 end Cubs2HeadingHold;
 
 model Cubs2PatternMission
-  parameter VehicleParameters vehicleParams =
-    VehicleParameters(mass = 0.065, thrustMax = 0.30,
-                      trimThrust = 0.10, envelopeDrag = 0.07);
   parameter RouteParameters patternRoute =
     RouteParameters(
       nSegments = 6,
@@ -265,7 +255,7 @@ model Cubs2PatternMission
     v_b_start = {4.0, 0.0, 0.0}
   );
   Cubs2InnerLoop innerLoop;
-  FixedWingOuterLoop outerLoop(vehicle = vehicleParams, route = patternRoute);
+  FixedWingOuterLoop outerLoop(route = patternRoute);
 
   output Real time_s;
   output Real x_m;

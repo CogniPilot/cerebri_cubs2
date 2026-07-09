@@ -15,12 +15,12 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import struct
 import sys
 import threading
 import time
 from typing import Iterable
 
-import flatbuffers
 import matplotlib
 import numpy as np
 from synapse.topic.AttitudeCommandData import AttitudeCommandData
@@ -28,12 +28,7 @@ from synapse.topic.ExternalOdometry import ExternalOdometry
 from synapse.topic.ExternalOdometryData import ExternalOdometryData
 from synapse.topic.ExternalOdometryFlags import ExternalOdometryFlags
 from synapse.topic.ExternalOdometryStatus import ExternalOdometryStatus
-from synapse.topic.PwmSignalOutputs import (
-    AddData as PwmSignalOutputsAddData,
-    End as PwmSignalOutputsEnd,
-    Start as PwmSignalOutputsStart,
-)
-from synapse.topic.PwmSignalOutputsData import CreatePwmSignalOutputsData, PwmSignalOutputsData
+from synapse.topic.PwmSignalOutputsData import PwmSignalOutputsData
 from synapse.types.Quaternionf import Quaternionf
 from synapse.types.RateTriplet import RateTriplet
 from synapse.types.Vec3f import Vec3f
@@ -60,6 +55,10 @@ RUMOCA_SESSION_CHECK_CODE = (
     "assert callable(runner), 'Rumoca Python Session.run_scenario is required'"
 )
 RUMOCA_RUN_SCENARIO_CODE = "import sys; import rumoca as rum; rum.Session().run_scenario(sys.argv[1])"
+
+RUMOCA_PWM_TABLE_SIZE = 68
+RUMOCA_PWM_STRUCT_OFFSET = 20
+PWM_STRUCT_FORMAT = "<QIBx16H2x"
 
 EXTERNAL_ODOMETRY_VALID_FLAGS = (
     ExternalOdometryFlags.PositionValid
@@ -306,19 +305,25 @@ def decode_pwm_outputs(payload: bytes, sim_time_s: float) -> dict[str, float | i
 
 
 def pack_rumoca_pwm_outputs(row: dict[str, float | int]) -> bytes:
-    builder = flatbuffers.Builder(PwmSignalOutputsData.SizeOf() + 32)
-    data = CreatePwmSignalOutputsData(
-        builder,
+    payload = struct.pack(
+        PWM_STRUCT_FORMAT,
         int(row["timestamp_us"]),
         int(row["active_mask"]),
         int(row["port"]),
         *(int(row[f"output{idx}_us"]) for idx in range(16)),
     )
-    PwmSignalOutputsStart(builder)
-    PwmSignalOutputsAddData(builder, data)
-    message = PwmSignalOutputsEnd(builder)
-    builder.Finish(message)
-    return bytes(builder.Output())
+    if len(payload) != PwmSignalOutputsData.SizeOf():
+        raise ValueError(f"expected {PwmSignalOutputsData.SizeOf()} PWM struct bytes, got {len(payload)}")
+
+    # Rumoca 0.9.16's FlatBuffers codec expects its deterministic
+    # table-with-inline-struct layout, which is larger than Python
+    # flatbuffers' compact builder output for this schema.
+    table = bytearray(RUMOCA_PWM_TABLE_SIZE)
+    struct.pack_into("<I", table, 0, 12)
+    struct.pack_into("<HHH", table, 4, 6, 56, 8)
+    struct.pack_into("<I", table, 12, 8)
+    table[RUMOCA_PWM_STRUCT_OFFSET : RUMOCA_PWM_STRUCT_OFFSET + len(payload)] = payload
+    return bytes(table)
 
 
 def euler_from_quat(qw: float, qx: float, qy: float, qz: float) -> tuple[float, float, float]:
