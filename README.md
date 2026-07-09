@@ -106,7 +106,18 @@ publish/subscribe, debug log, physics, and solver setup. Rumoca uses the
 `synapse_fbs` FlatBuffers wrapper schemas for the SIL transport, while the
 bridge forwards fixed-layout Synapse topic payloads to and from the Zephyr app.
 It then writes CSV, PNG, Markdown, and HTML artifacts that grade route laps,
-altitude, velocity, bank, pitch, and crosstrack tracking.
+altitude, velocity, bank, pitch, crosstrack tracking, and the 1 s native-sim
+lockstep boot-time acknowledgement.
+
+For a focused lockstep timing regression without the full flight-quality run,
+reuse an existing native-sim executable:
+
+```sh
+nix run .#native-sim-sil-run -- \
+  --sim build-native_sim/zephyr/zephyr.exe \
+  --artifacts artifacts/native-sim-lockstep \
+  --lockstep-regression-only
+```
 
 The same traffic is inspectable from another terminal while the test is
 running:

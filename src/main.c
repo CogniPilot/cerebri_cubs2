@@ -34,6 +34,8 @@ struct control_context {
 	uint32_t external_odometry_generation;
 	uint32_t manual_generation;
 	uint32_t main_loop_us;
+	uint64_t lockstep_time_us;
+	bool lockstep_time_valid;
 	bool previous_auto_mode;
 };
 
@@ -59,6 +61,8 @@ static bool read_external_odometry_if_updated(struct control_context *ctx)
 	}
 
 	ctx->external_odometry_generation = generation;
+	ctx->lockstep_time_us = ctx->external_odometry.timestamp_us;
+	ctx->lockstep_time_valid = true;
 	return true;
 }
 
@@ -201,20 +205,32 @@ static int control_pubs_init(void)
 	return 0;
 }
 
-static void update_telemetry(struct control_context *ctx, bool auto_mode)
+static uint64_t control_timestamp_us(const struct control_context *ctx)
 {
-	uint64_t now_us = (uint64_t)k_uptime_get() * 1000ULL;
+#if defined(CONFIG_BOARD_NATIVE_SIM)
+	if (ctx->lockstep_time_valid) {
+		return ctx->lockstep_time_us;
+	}
+
+	return 0ULL;
+#endif
+
+	return (uint64_t)k_uptime_get() * 1000ULL;
+}
+
+static void update_telemetry(struct control_context *ctx, bool auto_mode, uint64_t timestamp_us)
+{
 	bool armed = !ctx->manual.valid || ctx->manual.rc.ch6 >= 1500;
 
 	ctx->vehicle_health = (synapse_topic_VehicleHealthData_t){
-		.timestamp_us = now_us,
+		.timestamp_us = timestamp_us,
 		.flight_mode = auto_mode ? 1U : 0U,
 		.link_quality_pct = ctx->manual.valid ? 100U : 0U,
 		.flags = armed ? synapse_topic_VehicleHealthFlags_Armed : 0U,
 	};
 
 	ctx->attitude_estimate = (synapse_topic_AttitudeEstimateData_t){
-		.timestamp_us = now_us,
+		.timestamp_us = timestamp_us,
 		.angular_velocity_flu_rad_s = {
 			.roll = (float)g_model.eulerRateEstimate_rad_s[0],
 			.pitch = (float)g_model.eulerRateEstimate_rad_s[1],
@@ -225,14 +241,14 @@ static void update_telemetry(struct control_context *ctx, bool auto_mode)
 			      (float)g_model.euler_rad[2], &ctx->attitude_estimate.attitude);
 
 	ctx->attitude_command = (synapse_topic_AttitudeCommandData_t){
-		.timestamp_us = now_us,
+		.timestamp_us = timestamp_us,
 		.thrust = csyn_clampf((float)g_model.throttle, 0.0f, 1.0f),
 	};
 	csyn_quatf_from_euler((float)g_model.rollCommand, 0.0f, (float)g_model.desiredHeading,
 			      &ctx->attitude_command.attitude);
 
 	ctx->control_loop_metrics = (synapse_topic_ControlLoopMetricsData_t){
-		.timestamp_us = now_us,
+		.timestamp_us = timestamp_us,
 		.period_us = CUBS2_CONTROL_PERIOD_US,
 		.latency_us = ctx->main_loop_us,
 	};
@@ -245,9 +261,11 @@ static void update_telemetry(struct control_context *ctx, bool auto_mode)
 
 static void publish_outputs(struct control_context *ctx, bool auto_mode)
 {
-	csyn_pwm_outputs_from_rc(&ctx->control_rc, &ctx->pwm_outputs, k_uptime_get() * 1000LL);
+	uint64_t timestamp_us = control_timestamp_us(ctx);
+
+	csyn_pwm_outputs_from_rc(&ctx->control_rc, &ctx->pwm_outputs, (int64_t)timestamp_us);
 	(void)zros_pub_update(&g_pwm_outputs_pub);
-	update_telemetry(ctx, auto_mode);
+	update_telemetry(ctx, auto_mode, timestamp_us);
 }
 
 int main(void)
