@@ -175,7 +175,7 @@ static bool auto_mode_selected(const struct control_context *ctx)
 #endif
 }
 
-static int control_pubs_init(void)
+static int control_zros_init(void)
 {
 	struct {
 		struct zros_pub *pub;
@@ -268,6 +268,47 @@ static void publish_outputs(struct control_context *ctx, bool auto_mode)
 	update_telemetry(ctx, auto_mode, timestamp_us);
 }
 
+static void run_control_step(struct control_context *ctx)
+{
+	uint32_t start_cycles = k_cycle_get_32();
+	csyn_rc_channels16_t auto_rc = {0};
+	bool auto_mode;
+
+	(void)read_manual_if_updated(ctx);
+
+	auto_mode = auto_mode_selected(ctx);
+	if (auto_mode && !ctx->previous_auto_mode) {
+		EFMI_INIT(FixedWingOuterLoop, &g_model);
+		EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
+	}
+	ctx->previous_auto_mode = auto_mode;
+
+	if (auto_mode) {
+		if (external_odometry_valid(&ctx->external_odometry)) {
+			fixed_wing_map_input(&g_model, &ctx->external_odometry);
+			EFMI_STEP(FixedWingOuterLoop, &g_model);
+			fixed_wing_map_output(&g_model, &auto_rc);
+		} else {
+			idle_output(&auto_rc);
+		}
+		ctx->control_rc = auto_rc;
+	} else {
+		ctx->control_rc = ctx->manual.rc;
+	}
+
+	ctx->main_loop_us = k_cyc_to_us_floor32(k_cycle_get_32() - start_cycles);
+	publish_outputs(ctx, auto_mode);
+}
+
+#if defined(CONFIG_BOARD_NATIVE_SIM)
+static void wait_for_lockstep_odometry(struct control_context *ctx)
+{
+	while (!read_external_odometry_if_updated(ctx)) {
+		k_sleep(K_MSEC(1));
+	}
+}
+#endif
+
 int main(void)
 {
 	struct control_context *const ctx = &g_control_ctx;
@@ -277,7 +318,7 @@ int main(void)
 	EFMI_INIT(FixedWingOuterLoop, &g_model);
 	EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
 
-	rc = control_pubs_init();
+	rc = control_zros_init();
 	if (rc != 0) {
 		return rc;
 	}
@@ -285,36 +326,14 @@ int main(void)
 	LOG_INF("CUBS2 fixed-wing control starting");
 
 	while (true) {
-		uint32_t start_cycles = k_cycle_get_32();
-		csyn_rc_channels16_t auto_rc = {0};
-		bool auto_mode;
-
+#if defined(CONFIG_BOARD_NATIVE_SIM)
+		wait_for_lockstep_odometry(ctx);
+		run_control_step(ctx);
+#else
 		(void)read_external_odometry_if_updated(ctx);
-		(void)read_manual_if_updated(ctx);
-
-		auto_mode = auto_mode_selected(ctx);
-		if (auto_mode && !ctx->previous_auto_mode) {
-			EFMI_INIT(FixedWingOuterLoop, &g_model);
-			EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
-		}
-		ctx->previous_auto_mode = auto_mode;
-
-		if (auto_mode) {
-			if (external_odometry_valid(&ctx->external_odometry)) {
-				fixed_wing_map_input(&g_model, &ctx->external_odometry);
-				EFMI_STEP(FixedWingOuterLoop, &g_model);
-				fixed_wing_map_output(&g_model, &auto_rc);
-			} else {
-				idle_output(&auto_rc);
-			}
-			ctx->control_rc = auto_rc;
-		} else {
-			ctx->control_rc = ctx->manual.rc;
-		}
-
-		ctx->main_loop_us = k_cyc_to_us_floor32(k_cycle_get_32() - start_cycles);
-		publish_outputs(ctx, auto_mode);
+		run_control_step(ctx);
 		k_sleep(K_NSEC(CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS));
+#endif
 	}
 
 	return 0;

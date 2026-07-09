@@ -150,18 +150,18 @@ record RouteParameters
   Integer nSegments = 6 "flyable segments between route points";
   Real waypoints[7, 3] = [
     0.0,    0.0,  0.0;
-    -4.0,  -5.0,  3.0;
-    -3.0,   2.0,  3.0;
     16.20,  2.0,  3.0;
     16.0,  -4.22, 3.0;
     6.88,  -5.1,  3.0;
+    -4.0,  -5.0,  3.0;
+    -3.0,   2.0,  3.0;
     -4.0,  -5.0,  3.0] "route point rows are [x, y, z] [m]";
   Real cruiseSpeed(unit = "m/s") = 4.0;
-  Real altitudeToFlightPathGain = 2.0;
+  Real altitudeToFlightPathGain = 1.5;
   Real altitudeLookaheadDistance(unit = "m") = 8.0;
   Real flightPathAngleLimit(unit = "rad") = 0.12;
   Real speedToAccelerationGain = 1.0;
-  Real crossTrackSteeringDistance(unit = "m") = 2.0
+  Real crossTrackSteeringDistance(unit = "m") = 6.0
     "atan steering distance; 45 deg correction occurs when |cross-track| = d";
   Real waypointSwitchingDistance(unit = "m") = 3.0
     "switch when remaining along-track distance is within vehicle turn radius";
@@ -184,10 +184,12 @@ record AttitudeParameters
   Real stabilizerCommand(unit = "us") = 2000.0;
   Real pitchCommandToElevatorGain = 1.0 / 0.45
     "S2 pitch stick gain: inner loop maps about 0.45 rad per stick";
-  Real rollCommandToAileronGain = 1.0 / 0.87
-    "S2 bank stick gain: inner loop maps about 0.87 rad per stick";
+  Real rollCommandToStickErrorGain = 4.0
+    "roll stick is a bank-setpoint-rate command, so drive it from bank error";
+  Real rollCommandToStickRateDamping = 0.5
+    "roll-rate damping for the bank-error stick command";
   Real rollLimit(unit = "rad") = 0.5235987755982988;
-  Real rollRateLimit(unit = "rad/s") = 1.5707963267948966;
+  Real rollRateLimit(unit = "rad/s") = 3.141592653589793;
   Real courseDeadband(unit = "rad") = 0.017453292519943295;
 end AttitudeParameters;
 
@@ -336,13 +338,18 @@ protected
   discrete Real altitudeError;
   discrete Real crossTrackError;
   discrete Real steeringCorrection;
+  discrete Boolean launchSegmentComplete(start = false);
 
 algorithm
   when sample(0.0, dt) then
     activeWaypoint := pre(currentWaypoint);
+    launchSegmentComplete := pre(launchSegmentComplete) or activeWaypoint <> 1;
     segmentEndIndex := activeWaypoint + 1;
     segmentStart := waypointAt(route.waypoints, activeWaypoint);
     segmentEnd := waypointAt(route.waypoints, segmentEndIndex);
+    if activeWaypoint == 1 and launchSegmentComplete then
+      segmentStart[3] := segmentEnd[3];
+    end if;
 
     segmentVector := segmentEnd - segmentStart;
     horizontalSegmentVector := horizontalPart(segmentVector);
@@ -536,8 +543,8 @@ block AttitudeController
   parameter VehicleParameters vehicle = VehicleParameters();
   parameter AttitudeParameters params = AttitudeParameters();
   parameter PidParameters headingPid =
-    PidParameters(dt = dt, useInputDerivative = true, kp = 1.2, ki = 0.05,
-                  kd = 0.35, integralMax = 0.4,
+    PidParameters(dt = dt, useInputDerivative = true, kp = 0.65, ki = 0.02,
+                  kd = 0.12, integralMax = 0.25,
                   commandMin = -params.rollLimit,
                   commandMax = params.rollLimit);
 
@@ -606,7 +613,11 @@ algorithm
                   params.rollRateLimit * dt);
       rollCommandState := clip(rollCommandState, -params.rollLimit, params.rollLimit);
       rollCommand := rollCommandState;
-      aileron := clip(params.rollCommandToAileronGain * rollCommand, -1.0, 1.0);
+      aileron := clip(
+        params.rollCommandToStickErrorGain * (rollCommand - estimate.euler_rad[1])
+        - params.rollCommandToStickRateDamping * estimate.eulerRate_rad_s[1],
+        -1.0,
+        1.0);
       rudder := 0.0;
     end if;
   end when;
