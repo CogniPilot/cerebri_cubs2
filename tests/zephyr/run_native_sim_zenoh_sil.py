@@ -69,11 +69,11 @@ EXTERNAL_ODOMETRY_VALID_FLAGS = (
 
 ROUTE_WAYPOINTS = [
     (0.0, 0.0, 0.0),
-    (-4.0, -5.0, 3.0),
-    (-3.0, 2.0, 3.0),
     (16.20, 2.0, 3.0),
     (16.0, -4.22, 3.0),
     (6.88, -5.1, 3.0),
+    (-4.0, -5.0, 3.0),
+    (-3.0, 2.0, 3.0),
     (-4.0, -5.0, 3.0),
 ]
 
@@ -389,8 +389,10 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
         pwm_subscriber = session.declare_subscriber(SYNAPSE_PWM_TOPIC)
         attitude_subscriber = session.declare_subscriber(SYNAPSE_ATTITUDE_COMMAND_TOPIC)
         latest_sim_time_s = 0.0
+        latest_lockstep_timestamp_us = 0
+        latest_odometry_seq = 0
+        last_forwarded_odometry_seq = 0
         odometry_forwarded = False
-        control_forwarded = False
         bridge_seq = 0
 
         while not stop.is_set():
@@ -403,7 +405,9 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
                 odometry = decode_external_odometry(payload_bytes(sample))
                 odometry_row = external_odometry_row(odometry)
                 latest_sim_time_s = float(odometry_row["sim_time_s"])
+                latest_lockstep_timestamp_us = int(odometry_row["timestamp_us"])
                 bridge_seq += 1
+                latest_odometry_seq = bridge_seq
                 odometry_row["bridge_seq"] = bridge_seq
                 session.put(
                     SYNAPSE_EXTERNAL_ODOMETRY_TOPIC,
@@ -420,13 +424,18 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
                 row = decode_pwm_outputs(payload_bytes(sample), latest_sim_time_s)
                 bridge_seq += 1
                 row["bridge_seq"] = bridge_seq
-                row["lockstep_timestamp_us"] = int(round(latest_sim_time_s * 1_000_000.0))
-                real_control = int(row["output2_us"]) > 1100 or int(row["output6_us"]) > 1000
-                forward_to_plant = control_forwarded or (odometry_forwarded and real_control)
+                row["lockstep_timestamp_us"] = latest_lockstep_timestamp_us
+                pwm_timestamp_us = int(row["timestamp_us"])
+                forward_to_plant = (
+                    odometry_forwarded
+                    and pwm_timestamp_us == latest_lockstep_timestamp_us
+                    and latest_odometry_seq != last_forwarded_odometry_seq
+                    and bridge_seq > latest_odometry_seq
+                )
                 row["forwarded_to_plant"] = int(forward_to_plant)
                 if forward_to_plant:
                     session.put(RUMOCA_PWM_TOPIC, pack_rumoca_pwm_outputs(row))
-                    control_forwarded = True
+                    last_forwarded_odometry_seq = latest_odometry_seq
                 logs.pwm_rows.append(row)
                 did_work = True
 
@@ -514,19 +523,31 @@ def unwrap(values: list[float]) -> list[float]:
     return result
 
 
-def route_error(x_m: float, y_m: float, z_m: float, waypoint: int) -> tuple[float, float, float]:
+def wrapped_angle_errors(actual: list[float], command: list[float]) -> list[float]:
+    return [wrap_angle(a - c) for a, c in zip(actual, command)]
+
+
+def route_error(
+    x_m: float,
+    y_m: float,
+    z_m: float,
+    waypoint: int,
+    launch_segment_complete: bool = False,
+) -> tuple[float, float, float, float]:
     segments = range(1, len(ROUTE_WAYPOINTS))
     if waypoint in segments:
         candidates = [waypoint]
     else:
         candidates = list(segments)
 
-    best: tuple[float, float, float, float] | None = None
+    best: tuple[float, float, float, float, float] | None = None
     for idx in candidates:
         start = ROUTE_WAYPOINTS[idx - 1]
         end = ROUTE_WAYPOINTS[idx]
         sx, sy, sz = start
         ex, ey, ez = end
+        if idx == 1 and launch_segment_complete:
+            sz = ez
         vx = ex - sx
         vy = ey - sy
         length = max(math.hypot(vx, vy), 1e-6)
@@ -536,18 +557,19 @@ def route_error(x_m: float, y_m: float, z_m: float, waypoint: int) -> tuple[floa
         dy = y_m - sy
         along = dx * ux + dy * uy
         progress = max(0.0, min(1.0, along / length))
+        remaining = max(0.0, length - max(0.0, min(length, along)))
         path_altitude = sz + progress * (ez - sz)
         cross = dx * (-uy) + dy * ux
         distance = abs(cross) if 0.0 <= along <= length else min(
             math.hypot(x_m - sx, y_m - sy),
             math.hypot(x_m - ex, y_m - ey),
         )
-        candidate = (distance, cross, path_altitude, along)
+        candidate = (distance, cross, path_altitude, along, remaining)
         if best is None or candidate[0] < best[0]:
             best = candidate
 
     assert best is not None
-    return best[1], best[2], best[3]
+    return best[1], best[2], best[3], best[4]
 
 
 def merge_flight_rows(
@@ -558,13 +580,21 @@ def merge_flight_rows(
     pwm_nearest = nearest_rows(pwm_rows)
     attitude_nearest = nearest_rows(attitude_rows)
     merged: list[dict[str, float]] = []
+    launch_segment_complete = False
 
     for plant in plant_rows:
         t = plant["time"]
         pwm = pwm_nearest(t)
         attitude = attitude_nearest(t)
         waypoint = int(round(float(pwm.get("output5_us", plant.get("current_waypoint", 0.0)))))
-        crosstrack_m, altitude_cmd_m, _along = route_error(plant["x_m"], plant["y_m"], plant["z_m"], waypoint)
+        launch_segment_complete = launch_segment_complete or waypoint != 1
+        crosstrack_m, altitude_cmd_m, alongtrack_m, alongtrack_remaining_m = route_error(
+            plant["x_m"],
+            plant["y_m"],
+            plant["z_m"],
+            waypoint,
+            launch_segment_complete,
+        )
         vx = plant["vx_m_s"]
         vy = plant["vy_m_s"]
         ground_track = math.atan2(vy, vx) if math.hypot(vx, vy) > 0.2 else plant["yaw_rad"]
@@ -580,6 +610,8 @@ def merge_flight_rows(
                 "thrust_cmd": float(attitude.get("thrust_cmd", 0.0)),
                 "altitude_cmd_m": altitude_cmd_m,
                 "crosstrack_error_m": crosstrack_m,
+                "alongtrack_m": alongtrack_m,
+                "alongtrack_remaining_m": alongtrack_remaining_m,
                 "speed_cmd_m_s": float(pwm.get("output6_us", plant.get("desired_speed_m_s", 0.0))) / 1000.0,
                 "current_waypoint": float(waypoint),
                 "pwm_output0_us": float(pwm.get("output0_us", 1500.0)),
@@ -627,6 +659,25 @@ def count_laps(rows: list[dict[str, float]]) -> int:
     return laps
 
 
+def waypoint_switches(rows: list[dict[str, float]]) -> list[tuple[float, int, int]]:
+    if not rows:
+        return []
+
+    switches: list[tuple[float, int, int]] = []
+    previous = int(rows[0]["current_waypoint"])
+    for row in rows[1:]:
+        current = int(row["current_waypoint"])
+        if current != previous:
+            switches.append((row["time_s"], previous, current))
+            previous = current
+    return switches
+
+
+def target_waypoint(segment_start_index: float) -> float:
+    index = int(round(segment_start_index))
+    return float(index + 1 if index < len(ROUTE_WAYPOINTS) else 1)
+
+
 def save_plot(fig: plt.Figure, artifact_dir: Path, name: str) -> Path:
     path = artifact_dir / name
     fig.savefig(path, dpi=170)
@@ -641,6 +692,7 @@ def plot_flight(rows: list[dict[str, float]], artifact_dir: Path) -> list[Path]:
     route_x = [wp[0] for wp in ROUTE_WAYPOINTS]
     route_y = [wp[1] for wp in ROUTE_WAYPOINTS]
     route_z = [wp[2] for wp in ROUTE_WAYPOINTS]
+    switches = waypoint_switches(plot_rows)
     paths: list[Path] = []
 
     fig, axes = plt.subplots(3, 2, figsize=(15, 12), constrained_layout=True)
@@ -665,9 +717,12 @@ def plot_flight(rows: list[dict[str, float]], artifact_dir: Path) -> list[Path]:
     ax_alt.grid(True)
     ax_alt.legend(loc="best")
 
-    ax_heading.plot(t, np.degrees(unwrap(values(plot_rows, "heading_cmd_rad"))), "k--", label="cmd")
-    ax_heading.plot(t, np.degrees(unwrap(values(plot_rows, "heading_rad"))), label="yaw")
-    ax_heading.plot(t, np.degrees(unwrap(values(plot_rows, "ground_track_rad"))), label="track", alpha=0.75)
+    heading_cmd = values(plot_rows, "heading_cmd_rad")
+    heading_yaw = values(plot_rows, "heading_rad")
+    heading_track = values(plot_rows, "ground_track_rad")
+    ax_heading.plot(t, np.degrees(unwrap(heading_cmd)), "k--", label="cmd")
+    ax_heading.plot(t, np.degrees(unwrap(heading_yaw)), label="yaw")
+    ax_heading.plot(t, np.degrees(unwrap(heading_track)), label="track", alpha=0.75)
     ax_heading.set_title("Heading")
     ax_heading.set_xlabel("time [s]")
     ax_heading.set_ylabel("deg")
@@ -698,6 +753,42 @@ def plot_flight(rows: list[dict[str, float]], artifact_dir: Path) -> list[Path]:
     ax_cross.grid(True)
     paths.append(save_plot(fig, artifact_dir, "native-sim-overview.png"))
 
+    fig, axes = plt.subplots(3, 1, figsize=(10, 8), sharex=True, constrained_layout=True)
+    axes[0].plot(t, values(plot_rows, "crosstrack_error_m"))
+    axes[0].axhline(0.0, color="black", linewidth=0.8)
+    axes[0].set_title("Crosstrack Error")
+    axes[0].set_ylabel("m")
+    axes[0].grid(True)
+
+    axes[1].plot(t, values(plot_rows, "alongtrack_remaining_m"))
+    axes[1].axhline(0.0, color="black", linewidth=0.8)
+    axes[1].set_title("Along-Track Error To Target")
+    axes[1].set_ylabel("m")
+    axes[1].grid(True)
+
+    axes[2].step(
+        t,
+        [target_waypoint(row["current_waypoint"]) for row in plot_rows],
+        where="post",
+    )
+    axes[2].set_title("Target Waypoint")
+    axes[2].set_xlabel("time [s]")
+    axes[2].set_ylabel("index")
+    axes[2].grid(True)
+    for ax in axes:
+        for switch_time, _previous, current in switches:
+            ax.axvline(switch_time, color="tab:red", alpha=0.25, linewidth=0.9)
+    for switch_time, _previous, current in switches:
+        axes[2].annotate(
+            str(int(target_waypoint(current))),
+            (switch_time, target_waypoint(current)),
+            textcoords="offset points",
+            xytext=(3, 5),
+            fontsize=8,
+            color="tab:red",
+        )
+    paths.append(save_plot(fig, artifact_dir, "native-sim-route-errors.png"))
+
     fig, ax = plt.subplots(figsize=(8, 7), constrained_layout=True)
     ax.plot(values(plot_rows, "x_m"), values(plot_rows, "y_m"), label="flight path")
     ax.plot(route_x, route_y, "k--", label="waypoint route")
@@ -710,19 +801,21 @@ def plot_flight(rows: list[dict[str, float]], artifact_dir: Path) -> list[Path]:
     ax.legend(loc="best")
     paths.append(save_plot(fig, artifact_dir, "native-sim-topdown.png"))
 
-    fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True, constrained_layout=True)
-    axes[0].plot(t, values(plot_rows, "thrust_cmd"), "k--", label="thrust command")
-    axes[0].plot(t, values(plot_rows, "throttle_cmd"), label="plant throttle")
-    axes[0].set_title("Throttle")
-    axes[0].set_ylabel("normalized")
-    axes[0].grid(True)
-    axes[0].legend(loc="best")
-    axes[1].plot(t, values(plot_rows, "elevator_cmd"), label="plant elevator")
-    axes[1].set_title("Elevator")
-    axes[1].set_xlabel("time [s]")
-    axes[1].set_ylabel("normalized")
-    axes[1].grid(True)
-    axes[1].legend(loc="best")
+    fig, axes = plt.subplots(4, 1, figsize=(10, 10), sharex=True, constrained_layout=True)
+    actuator_panels = [
+        ("Aileron", "stick_roll_cmd", "aileron_cmd"),
+        ("Elevator", "stick_pitch_cmd", "elevator_cmd"),
+        ("Rudder", "stick_yaw_cmd", "rudder_cmd"),
+        ("Throttle", "stick_throttle_cmd", "throttle_cmd"),
+    ]
+    for ax, (title, stick_signal, plant_signal) in zip(axes, actuator_panels):
+        ax.plot(t, values(plot_rows, stick_signal), "k--", label="stick command")
+        ax.plot(t, values(plot_rows, plant_signal), label="plant actuator")
+        ax.set_title(title)
+        ax.set_ylabel("normalized")
+        ax.grid(True)
+        ax.legend(loc="best")
+    axes[-1].set_xlabel("time [s]")
     paths.append(save_plot(fig, artifact_dir, "native-sim-actuators.png"))
 
     fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True, constrained_layout=True)

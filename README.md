@@ -119,6 +119,20 @@ nix run .#native-sim-sil-run -- \
   --lockstep-regression-only
 ```
 
+To run the same command sequence as the GitHub `zephyr_sil_flight_test` job
+from a local checkout:
+
+```sh
+scripts/run-zephyr-sil-flight-test.sh
+```
+
+For faster lockstep iteration after the workspace is up to date and the
+executable has already been built:
+
+```sh
+scripts/run-zephyr-sil-flight-test.sh --skip-west-update --skip-build --lockstep-only
+```
+
 The same traffic is inspectable from another terminal while the test is
 running:
 
