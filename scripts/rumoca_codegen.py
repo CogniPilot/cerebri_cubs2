@@ -24,8 +24,18 @@ def main() -> int:
         ) from exc
 
     args.output.mkdir(parents=True, exist_ok=True)
-    model = rm.load(str(args.model_file), model=args.model)
-    generated = model.codegen(args.target).save_all(str(args.output))
+
+    if hasattr(rm, "load"):
+        model = rm.load(str(args.model_file), model=args.model)
+        generated = model.codegen(args.target).save_all(str(args.output))
+    else:
+        generated = rm.Session().codegen_file(
+            str(args.model_file),
+            args.model,
+            args.target,
+            str(args.output),
+        )
+
     for path in generated:
         print(f"wrote {path}")
     return 0

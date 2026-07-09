@@ -200,14 +200,13 @@ def generate_bfbs(artifact_dir: Path) -> Path:
     return bfbs
 
 
-def scenario_with_duration(scenario: Path, artifact_dir: Path, t_end: float | None) -> Path:
-    if t_end is None:
-        return scenario
-
+def scenario_for_run(scenario: Path, artifact_dir: Path, t_end: float | None, locator: str) -> Path:
     text = scenario.read_text()
-    updated, count = re.subn(r"(?m)^t_end\s*=\s*[0-9.]+", f"t_end = {t_end}", text, count=1)
-    if count != 1:
-        raise RuntimeError(f"could not override t_end in {scenario}")
+    updated = text
+    if t_end is not None:
+        updated, count = re.subn(r"(?m)^t_end\s*=\s*[0-9.]+", f"t_end = {t_end}", updated, count=1)
+        if count != 1:
+            raise RuntimeError(f"could not override t_end in {scenario}")
     updated = updated.replace(
         'file = "Cubs2NativeSimSIL.mo"',
         f'file = "{(ROOT / "tests" / "zephyr" / "Cubs2NativeSimSIL.mo").as_posix()}"',
@@ -219,6 +218,30 @@ def scenario_with_duration(scenario: Path, artifact_dir: Path, t_end: float | No
     updated = updated.replace(
         '"../../models/plant"',
         f'"{(ROOT / "models" / "plant").as_posix()}"',
+    )
+    updated = re.sub(
+        r'(?m)^output\s*=\s*"[^"]*native-sim-rumoca\.html"',
+        f'output = "{(artifact_dir / "native-sim-rumoca.html").as_posix()}"',
+        updated,
+        count=1,
+    )
+    updated = re.sub(
+        r'(?m)^endpoint\s*=\s*"[^"]+"',
+        f'endpoint = "{locator}"',
+        updated,
+        count=1,
+    )
+    updated = re.sub(
+        r'(?m)^bfbs\s*=\s*\[[^\]]*native_sil_io\.bfbs"[^\]]*\]',
+        f'bfbs = ["{(artifact_dir / "native_sil_io.bfbs").as_posix()}"]',
+        updated,
+        count=1,
+    )
+    updated = re.sub(
+        r'(?m)^path\s*=\s*"[^"]*native-sim-plant\.csv"',
+        f'path = "{(artifact_dir / "native-sim-plant.csv").as_posix()}"',
+        updated,
+        count=1,
     )
     path = artifact_dir / scenario.name
     path.write_text(updated)
@@ -430,11 +453,12 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
                     break
                 row = decode_pwm_outputs(payload_bytes(sample), latest_sim_time_s)
                 real_control = int(row["output2_us"]) > 1100 or int(row["output6_us"]) > 1000
-                forward_to_plant = control_forwarded or (mocap_forwarded and real_control)
+                forward_to_plant = mocap_forwarded
                 row["forwarded_to_plant"] = int(forward_to_plant)
+                row["real_control"] = int(real_control)
                 if forward_to_plant:
                     session.put(RUMOCA_PWM_TOPIC, pack_rumoca_pwm_outputs(row))
-                    control_forwarded = True
+                    control_forwarded = control_forwarded or real_control
                 logs.pwm_rows.append(row)
                 did_work = True
 
@@ -953,7 +977,7 @@ def main() -> int:
     attitude_csv = artifact_dir / "native-sim-attitude-command.csv"
     merged_csv = artifact_dir / "native-sim-flight.csv"
 
-    scenario_to_run = scenario_with_duration(scenario, artifact_dir, args.t_end)
+    scenario_to_run = scenario_for_run(scenario, artifact_dir, args.t_end, args.locator)
     rumoca_cmd = [
         sys.executable,
         os.fspath(ROOT / "scripts" / "rumoca_scenario.py"),

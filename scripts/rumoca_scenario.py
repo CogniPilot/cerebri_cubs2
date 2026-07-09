@@ -68,11 +68,6 @@ def find_scenario_runner(rm: Any) -> Callable[[Path], Any]:
 
     session_type = getattr(rm, "Session", None)
     if session_type is not None:
-        for name in ("run_scenario", "run_scenario_file", "simulate_scenario", "simulate_scenario_file"):
-            candidate = getattr(session_type, name, None)
-            if callable(candidate):
-                return lambda scenario, candidate=candidate: call_with_supported_kwargs(candidate, scenario)
-
         try:
             session = session_type()
         except TypeError:
@@ -82,6 +77,11 @@ def find_scenario_runner(rm: Any) -> Callable[[Path], Any]:
                 candidate = getattr(session, name, None)
                 if callable(candidate):
                     return lambda scenario, candidate=candidate: call_with_supported_kwargs(candidate, scenario)
+
+        for name in ("run_scenario", "run_scenario_file", "simulate_scenario", "simulate_scenario_file"):
+            candidate = getattr(session_type, name, None)
+            if callable(candidate):
+                return lambda scenario, candidate=candidate: call_with_supported_kwargs(candidate, scenario)
 
     raise AttributeError(
         "the installed Rumoca Python binding does not expose a scenario runner; "
