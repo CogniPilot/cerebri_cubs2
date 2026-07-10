@@ -24,10 +24,12 @@ set(ZEPHYR_MODULES
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(cubs2 LANGUAGES C)
 
-if(CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064 AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
+if(CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064 AND CMAKE_C_COMPILER_ID STREQUAL "GNU"
+   AND "${GNULD_VERSION_STRING}" VERSION_GREATER_EQUAL 2.39)
   # Zephyr's bare-metal GNU ld link uses -N, which creates a RWX load segment
   # in the ELF. This image is not a hosted executable, so silence ld.bfd's
-  # generic RWX segment diagnostic for this firmware target.
+  # generic RWX segment diagnostic for this firmware target. The flag itself
+  # needs binutils >= 2.39 (SDK 0.17.3 ships 2.38, which errors on it).
   zephyr_link_libraries(${LINKERFLAGPREFIX},--no-warn-rwx-segments)
 endif()
 

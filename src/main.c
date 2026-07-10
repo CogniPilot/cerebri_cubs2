@@ -7,6 +7,7 @@
 
 #include "FixedWingOuterLoop.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -22,6 +23,15 @@ LOG_MODULE_REGISTER(cubs2, LOG_LEVEL_INF);
 #define CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS 20000000
 #define CUBS2_CONTROL_PERIOD_US (CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS / 1000U)
 
+/* Producer-defined VehicleCommand id broadcasting one local-frame mission item:
+ * arg0 = item seq (0-based), arg1 = total items, arg2..4 = ENU east/north/up in
+ * meters, arg5 = mission_id. Items cycle so the ground station can rebuild the
+ * full plan from any join point.
+ */
+#define CUBS2_CMD_MISSION_ITEM_LOCAL   32001U
+#define CUBS2_MISSION_BROADCAST_PERIOD 10U /* control loops per item, 50 Hz / 10 = 5 Hz */
+#define CUBS2_MISSION_ID               1U
+
 struct control_context {
 	struct csyn_mocap_rigid_body mocap;
 	struct csyn_manual_control manual;
@@ -31,6 +41,12 @@ struct control_context {
 	synapse_topic_AttitudeEstimateData_t attitude_estimate;
 	synapse_topic_AttitudeCommandData_t attitude_command;
 	synapse_topic_ControlLoopMetricsData_t control_loop_metrics;
+	synapse_topic_MissionProgressData_t mission_progress;
+	synapse_topic_LocalPositionCommandData_t local_position_command;
+	synapse_topic_VehicleCommandData_t vehicle_command;
+	synapse_topic_NavigationTargetData_t navigation_target;
+	uint32_t mission_broadcast_countdown;
+	uint16_t mission_broadcast_seq;
 	uint32_t mocap_generation;
 	uint32_t manual_generation;
 	uint32_t main_loop_us;
@@ -45,6 +61,10 @@ static struct zros_pub g_vehicle_health_pub;
 static struct zros_pub g_attitude_estimate_pub;
 static struct zros_pub g_attitude_command_pub;
 static struct zros_pub g_control_loop_metrics_pub;
+static struct zros_pub g_mission_progress_pub;
+static struct zros_pub g_local_position_command_pub;
+static struct zros_pub g_vehicle_command_pub;
+static struct zros_pub g_navigation_target_pub;
 
 static bool read_mocap_if_updated(struct control_context *ctx)
 {
@@ -109,9 +129,10 @@ static void fixed_wing_map_input(FixedWingOuterLoopState *model,
 static void fixed_wing_map_output(const FixedWingOuterLoopState *model,
 				  csyn_rc_channels16_t *rc)
 {
+	/* Wire is nose-up = high us on ch1 (2026-07-09 flight): no negations. */
 	*rc = (csyn_rc_channels16_t){
-		.ch0 = csyn_pwm_from_centered_axis(-(float)model->aileron),
-		.ch1 = csyn_pwm_from_centered_axis(-(float)model->elevator),
+		.ch0 = csyn_pwm_from_centered_axis((float)model->aileron),
+		.ch1 = csyn_pwm_from_centered_axis((float)model->elevator),
 		.ch2 = csyn_pwm_from_throttle_axis((float)model->throttle),
 		.ch3 = csyn_pwm_from_centered_axis((float)model->rudder),
 		.ch4 = (int32_t)csyn_clampf((float)model->stabilizer, 1000.0f, 2000.0f),
@@ -175,6 +196,12 @@ static int control_pubs_init(void)
 		 &g_control_ctx.attitude_command},
 		{&g_control_loop_metrics_pub, &topic_control_loop_metrics,
 		 &g_control_ctx.control_loop_metrics},
+		{&g_mission_progress_pub, &topic_mission_progress, &g_control_ctx.mission_progress},
+		{&g_local_position_command_pub, &topic_local_position_command,
+		 &g_control_ctx.local_position_command},
+		{&g_vehicle_command_pub, &topic_vehicle_command, &g_control_ctx.vehicle_command},
+		{&g_navigation_target_pub, &topic_navigation_target,
+		 &g_control_ctx.navigation_target},
 	};
 
 	zros_node_init(&g_node, "cubs2_control");
@@ -188,6 +215,123 @@ static int control_pubs_init(void)
 	}
 
 	return 0;
+}
+
+static void update_mission_telemetry(struct control_context *ctx, uint64_t now_us, bool auto_mode)
+{
+	/* currentWaypoint is the 1-based active segment; the segment target is
+	 * route_waypoints row currentWaypoint in C indexing (row 0 is the route
+	 * start point), so seq n targets route_waypoints[n + 1].
+	 */
+	uint16_t total = (uint16_t)g_model.route_nSegments;
+	uint16_t current_seq = 0U;
+
+	if (g_model.currentWaypoint >= 1) {
+		current_seq = (uint16_t)g_model.currentWaypoint - 1U;
+	}
+	if (total > 0U && current_seq >= total) {
+		current_seq = total - 1U;
+	}
+
+	ctx->mission_progress = (synapse_topic_MissionProgressData_t){
+		.timestamp_us = now_us,
+		.mission_id = CUBS2_MISSION_ID,
+		.current_seq = current_seq,
+		.total = total,
+		.mission_state = (auto_mode && ctx->mocap.valid) ? synapse_types_MissionState_Active
+								 : synapse_types_MissionState_Idle,
+	};
+
+	ctx->local_position_command = (synapse_topic_LocalPositionCommandData_t){
+		.timestamp_us = now_us,
+		.position_enu_m = {
+			.x = (float)g_model.route_waypoints[current_seq + 1U][0],
+			.y = (float)g_model.route_waypoints[current_seq + 1U][1],
+			.z = (float)g_model.route_waypoints[current_seq + 1U][2],
+		},
+		.yaw_rad = (float)g_model.desiredHeading,
+		.type_mask = synapse_topic_LocalPositionCommandMask_IgnoreVelocityX |
+			     synapse_topic_LocalPositionCommandMask_IgnoreVelocityY |
+			     synapse_topic_LocalPositionCommandMask_IgnoreVelocityZ |
+			     synapse_topic_LocalPositionCommandMask_IgnoreAccelerationX |
+			     synapse_topic_LocalPositionCommandMask_IgnoreAccelerationY |
+			     synapse_topic_LocalPositionCommandMask_IgnoreAccelerationZ,
+		.coordinate_frame = synapse_types_LocalFrame_LocalEnu,
+	};
+
+	(void)zros_pub_update(&g_mission_progress_pub);
+	(void)zros_pub_update(&g_local_position_command_pub);
+
+	if (ctx->mission_broadcast_countdown > 0U) {
+		ctx->mission_broadcast_countdown--;
+		return;
+	}
+	ctx->mission_broadcast_countdown = CUBS2_MISSION_BROADCAST_PERIOD - 1U;
+
+	if (total == 0U) {
+		return;
+	}
+	if (ctx->mission_broadcast_seq >= total) {
+		ctx->mission_broadcast_seq = 0U;
+	}
+
+	ctx->vehicle_command = (synapse_topic_VehicleCommandData_t){
+		.timestamp_us = now_us,
+		.arg0 = (float)ctx->mission_broadcast_seq,
+		.arg1 = (float)total,
+		.arg2 = (float)g_model.route_waypoints[ctx->mission_broadcast_seq + 1U][0],
+		.arg3 = (float)g_model.route_waypoints[ctx->mission_broadcast_seq + 1U][1],
+		.arg4 = (float)g_model.route_waypoints[ctx->mission_broadcast_seq + 1U][2],
+		.arg5 = (float)CUBS2_MISSION_ID,
+		.command_id = CUBS2_CMD_MISSION_ITEM_LOCAL,
+	};
+	(void)zros_pub_update(&g_vehicle_command_pub);
+	ctx->mission_broadcast_seq++;
+}
+
+static int16_t cdeg_from_rad(double angle_rad)
+{
+	/* REP-0103 angle in centidegrees (18000/pi), clamped to the schema range. */
+	return (int16_t)csyn_clampf((float)(angle_rad * 5729.5779513082325), -18000.0f, 18000.0f);
+}
+
+static void update_navigation_target(struct control_context *ctx, uint64_t now_us,
+				     bool auto_mode)
+{
+	double target_east = 0.0;
+	double target_north = 0.0;
+	float distance = 0.0f;
+	int16_t target_yaw = 0;
+	int32_t wp = g_model.currentWaypoint;
+
+	if (wp >= 1 && wp <= g_model.route_nSegments) {
+		/* segment target: route_waypoints row wp (row 0 = route start) */
+		target_east = g_model.route_waypoints[wp][0];
+		target_north = g_model.route_waypoints[wp][1];
+	}
+	if (ctx->mocap.valid) {
+		float d_east = (float)target_east - ctx->mocap.x;
+		float d_north = (float)target_north - ctx->mocap.y;
+
+		distance = sqrtf(d_east * d_east + d_north * d_north);
+		target_yaw = cdeg_from_rad(atan2f(d_north, d_east));
+	}
+
+	ctx->navigation_target = (synapse_topic_NavigationTargetData_t){
+		.timestamp_us = now_us,
+		.altitude_error_m = (float)g_model.guidance_altitudeError,
+		.airspeed_error_m_s = (float)(g_model.guidance_setpoints_speed -
+					      g_model.estimator_estimate_speed),
+		.xtrack_error_m = (float)g_model.guidance_crossTrackError,
+		/* Manual flight publishes the integral-free preview: what auto would fly. */
+		.desired_roll_cdeg = cdeg_from_rad(auto_mode ? g_model.rollCommand
+							     : g_model.rollCommandPreview),
+		.desired_pitch_cdeg = cdeg_from_rad(auto_mode ? g_model.tecs_pitchCommand
+							      : g_model.pitchCommandPreview),
+		.desired_yaw_cdeg = cdeg_from_rad(g_model.desiredHeading),
+		.target_yaw_cdeg = target_yaw,
+		.distance_to_waypoint_m = (uint16_t)csyn_clampf(distance, 0.0f, 65535.0f),
+	};
 }
 
 static void update_telemetry(struct control_context *ctx, bool auto_mode)
@@ -226,10 +370,15 @@ static void update_telemetry(struct control_context *ctx, bool auto_mode)
 		.latency_us = ctx->main_loop_us,
 	};
 
+	update_navigation_target(ctx, now_us, auto_mode);
+
 	(void)zros_pub_update(&g_vehicle_health_pub);
 	(void)zros_pub_update(&g_attitude_estimate_pub);
 	(void)zros_pub_update(&g_attitude_command_pub);
 	(void)zros_pub_update(&g_control_loop_metrics_pub);
+	(void)zros_pub_update(&g_navigation_target_pub);
+
+	update_mission_telemetry(ctx, now_us, auto_mode);
 }
 
 static void publish_outputs(struct control_context *ctx, bool auto_mode)
@@ -255,6 +404,13 @@ int main(void)
 
 	LOG_INF("CUBS2 fixed-wing control starting");
 
+	/* Absolute-period scheduling: relative sleep adds the work time to every
+	 * cycle, stretching the model's fixed dt and scaling all derivatives.
+	 */
+	int64_t next_cycle_ticks = k_uptime_ticks();
+	const uint32_t period_ticks =
+		k_ns_to_ticks_ceil32(CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS);
+
 	while (true) {
 		uint32_t start_cycles = k_cycle_get_32();
 		csyn_rc_channels16_t auto_rc = {0};
@@ -264,16 +420,20 @@ int main(void)
 		(void)read_manual_if_updated(ctx);
 
 		auto_mode = auto_mode_selected(ctx);
-		if (auto_mode && !ctx->previous_auto_mode) {
-			EFMI_INIT(FixedWingOuterLoop, &g_model);
-			EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
-		}
 		ctx->previous_auto_mode = auto_mode;
+
+		/* The model steps whenever a pose is available, in every mode, so
+		 * the estimator is always warm: engaging auto mid-air is seamless
+		 * instead of flying blind while filters spin up from zero.
+		 */
+		if (ctx->mocap.valid) {
+			fixed_wing_map_input(&g_model, &ctx->mocap);
+			g_model.engaged = auto_mode ? 1.0 : 0.0;
+			EFMI_STEP(FixedWingOuterLoop, &g_model);
+		}
 
 		if (auto_mode) {
 			if (ctx->mocap.valid) {
-				fixed_wing_map_input(&g_model, &ctx->mocap);
-				EFMI_STEP(FixedWingOuterLoop, &g_model);
 				fixed_wing_map_output(&g_model, &auto_rc);
 			} else {
 				idle_output(&auto_rc);
@@ -285,7 +445,11 @@ int main(void)
 
 		ctx->main_loop_us = k_cyc_to_us_floor32(k_cycle_get_32() - start_cycles);
 		publish_outputs(ctx, auto_mode);
-		k_sleep(K_NSEC(CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS));
+		next_cycle_ticks += period_ticks;
+		if (k_uptime_ticks() > next_cycle_ticks + 2 * (int64_t)period_ticks) {
+			next_cycle_ticks = k_uptime_ticks(); /* resync after a stall */
+		}
+		k_sleep(K_TIMEOUT_ABS_TICKS(next_cycle_ticks));
 	}
 
 	return 0;
