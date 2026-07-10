@@ -2,6 +2,16 @@ source "Kconfig.zephyr"
 
 menu "CUBS2"
 
+config CUBS2_REALTIME
+	bool "Realtime flight build (Zenoh mocap in, wall-clock control loop)"
+	default y
+	help
+	  Build the realtime autopilot: the control loop paces itself on the
+	  wall clock and consumes the direct Zenoh mocap pose stream, with
+	  mission telemetry published over the csyn bridge. Disable for the
+	  lockstep SIL build, which consumes external odometry through the
+	  shared-memory transport and steps on simulation time.
+
 config CUBS2_MANUAL_OVERRIDE
 	bool "Select manual or autonomous RC output from incoming RC switch"
 	default y

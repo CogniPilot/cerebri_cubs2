@@ -342,6 +342,7 @@ int main(void)
 		if (auto_mode) {
 			if (step_control && external_odometry_valid(&ctx->external_odometry)) {
 				fixed_wing_map_input(&g_model, &ctx->external_odometry);
+				g_model.engaged = 1.0;
 				EFMI_STEP(FixedWingOuterLoop, &g_model);
 				fixed_wing_map_output(&g_model, &auto_rc);
 				ctx->control_rc = auto_rc;

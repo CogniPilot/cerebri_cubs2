@@ -35,7 +35,7 @@ manifest:
       path: modules/lib/zros
     - name: csyn
       remote: cognipilot
-      revision: 4e7a0c607bd307e96a118c9710e6144d6abdc48a # external_odometry bridge, synapse_fbs 0.5.0 release
+      revision: 3b54c98b072e3b8a3fdae2ada0c36e2c90c4d1c5 # flight-zenoh-mocap: direct mocap key + mission topics on 0.5.0 (local; push before CI)
       path: modules/lib/csyn
     - name: modelica_models
       remote: cognipilot
