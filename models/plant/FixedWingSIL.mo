@@ -314,11 +314,11 @@ equation
   //     setpoint when slow and releases itself once speed recovers.
   climb_auth = min(1, max(0, (airspeed - v_prot_lo)/(v_prot_hi - v_prot_lo)));
   rate_phi = armed*stick_roll*roll_cmd_rate;
-  rate_theta = armed*(if stick_pitch > 0 then stick_pitch*pitch_cmd_rate*climb_auth else stick_pitch*pitch_cmd_rate);
-  der(phi_sp) = if phi_sp > phi_sp_max then min(0, rate_phi) else if phi_sp < -phi_sp_max then max(0, rate_phi) else rate_phi;
-  der(theta_sp) = if theta_sp > theta_sp_max then min(0, rate_theta) else if theta_sp < -theta_sp_max then max(0, rate_theta) else rate_theta;
+  rate_theta = armed*noEvent(if stick_pitch > 0 then stick_pitch*pitch_cmd_rate*climb_auth else stick_pitch*pitch_cmd_rate);
+  der(phi_sp) = noEvent(if phi_sp > phi_sp_max then min(0, rate_phi) else if phi_sp < -phi_sp_max then max(0, rate_phi) else rate_phi);
+  der(theta_sp) = noEvent(if theta_sp > theta_sp_max then min(0, rate_theta) else if theta_sp < -theta_sp_max then max(0, rate_theta) else rate_theta);
 
-  theta_eff = if airspeed < v_prot_lo then min(theta_sp, -dive_slope*(v_prot_lo - airspeed)) else theta_sp;
+  theta_eff = noEvent(if airspeed < v_prot_lo then min(theta_sp, -dive_slope*(v_prot_lo - airspeed)) else theta_sp);
 
   p_sp = min(p_rate_max, max(-p_rate_max, Kp_phi*(phi_sp - phi)));
   q_up_sp = min(q_rate_max, max(-q_rate_max, Kp_theta*(theta_eff - theta)));
@@ -336,9 +336,9 @@ equation
   e_r = r_sp - r_meas;
 
   // --- INNER loop: rate PI with conditional anti-windup, gated by arm ---
-  der(i_p) = if i_p > ilim_p then min(0, armed*e_p) else if i_p < -ilim_p then max(0, armed*e_p) else armed*e_p;
-  der(i_q) = if i_q > ilim_q then min(0, armed*e_q) else if i_q < -ilim_q then max(0, armed*e_q) else armed*e_q;
-  der(i_r) = if i_r > ilim_r then min(0, armed*e_r) else if i_r < -ilim_r then max(0, armed*e_r) else armed*e_r;
+  der(i_p) = noEvent(if i_p > ilim_p then min(0, armed*e_p) else if i_p < -ilim_p then max(0, armed*e_p) else armed*e_p);
+  der(i_q) = noEvent(if i_q > ilim_q then min(0, armed*e_q) else if i_q < -ilim_q then max(0, armed*e_q) else armed*e_q);
+  der(i_r) = noEvent(if i_r > ilim_r then min(0, armed*e_r) else if i_r < -ilim_r then max(0, armed*e_r) else armed*e_r);
   i_p_c = min(ilim_p, max(-ilim_p, i_p));
   i_q_c = min(ilim_q, max(-ilim_q, i_q));
   i_r_c = min(ilim_r, max(-ilim_r, i_r));

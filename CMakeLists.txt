@@ -24,6 +24,10 @@ set(ZEPHYR_MODULES
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(cubs2 LANGUAGES C)
 
+if(TARGET native_simulator)
+  target_sources(native_simulator INTERFACE src/native_sil_host.c)
+endif()
+
 if(CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064 AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
   # Zephyr's bare-metal GNU ld link uses -N, which creates a RWX load segment
   # in the ELF. This image is not a hosted executable, so silence ld.bfd's

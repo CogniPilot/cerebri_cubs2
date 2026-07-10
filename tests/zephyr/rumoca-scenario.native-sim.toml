@@ -12,16 +12,16 @@ file = "Cubs2NativeSimSIL.mo"
 name = "Cubs2NativeSimSIL"
 
 [sim]
-dt = 0.002
+dt = 0.02
 mode = "lockstep"
 solver = "rk-like"
 t_end = 40.0
 output = "artifacts/native-sim-sil/native-sim-rumoca.html"
 
 [lockstep]
-send_rate_hz = 240.0
+send_rate_hz = 50.0
 receive_rate_hz = 50.0
-max_advance_dt = 0.002
+max_advance_dt = 0.02
 
 [input]
 mode = "auto"

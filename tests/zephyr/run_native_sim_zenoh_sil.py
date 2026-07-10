@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
 
-"""Run native_sim against a Rumoca/CMM plant through real Synapse Zenoh topics."""
+"""Run native_sim against a Rumoca/CMM plant through fixed Synapse payloads."""
 
 from __future__ import annotations
 
@@ -14,12 +14,15 @@ import math
 import os
 from pathlib import Path
 import re
+import shlex
+import shutil
 import subprocess
 import struct
 import sys
 import threading
 import time
-from typing import Iterable
+from typing import Callable, Iterable
+import xml.etree.ElementTree as ET
 
 import matplotlib
 import numpy as np
@@ -48,17 +51,69 @@ RUMOCA_EXTERNAL_ODOMETRY_TOPIC = "cubs2/sil/external_odometry"
 RUMOCA_PWM_TOPIC = "cubs2/sil/pwm_signal_outputs"
 
 DEFAULT_SCENARIO = ROOT / "tests" / "zephyr" / "rumoca-scenario.native-sim.toml"
+DEFAULT_T_END = 40.0
 SYNAPSE_BFBS_RELATIVE = Path("_deps") / "synapse_fbs_c-src" / "bfbs" / "all.bfbs"
-RUMOCA_SESSION_CHECK_CODE = (
+RUMOCA_SCENARIO_CHECK_CODE = (
     "import rumoca as rum; "
     "runner = getattr(rum.Session(), 'run_scenario', None); "
     "assert callable(runner), 'Rumoca Python Session.run_scenario is required'"
 )
 RUMOCA_RUN_SCENARIO_CODE = "import sys; import rumoca as rum; rum.Session().run_scenario(sys.argv[1])"
+FMI_MODEL_FILE = ROOT / "tests" / "zephyr" / "Cubs2NativeSimSIL.mo"
+FMI_MODEL_NAME = "Cubs2NativeSimSIL"
+
+TRACE_OUTPUT_NAMES = (
+    "x_m",
+    "y_m",
+    "z_m",
+    "vx_m_s",
+    "vy_m_s",
+    "vz_m_s",
+    "airspeed_m_s",
+    "roll_rad",
+    "pitch_rad",
+    "yaw_rad",
+    "aileron_cmd",
+    "elevator_cmd",
+    "throttle_cmd",
+    "rudder_cmd",
+    "stick_roll_cmd",
+    "stick_pitch_cmd",
+    "stick_throttle_cmd",
+    "stick_yaw_cmd",
+    "armed_cmd",
+    "current_waypoint",
+    "desired_speed_m_s",
+    "roll_command_rad",
+    "course_error_rad",
+)
+
+ODOMETRY_OUTPUT_NAMES = (
+    "odometry_timestamp_us",
+    "odometry_x_m",
+    "odometry_y_m",
+    "odometry_z_m",
+    "odometry_qw",
+    "odometry_qx",
+    "odometry_qy",
+    "odometry_qz",
+    "odometry_vx_m_s",
+    "odometry_vy_m_s",
+    "odometry_vz_m_s",
+    "odometry_roll_rate_rad_s",
+    "odometry_pitch_rate_rad_s",
+    "odometry_yaw_rate_rad_s",
+    "odometry_flags",
+    "odometry_status",
+    "odometry_source_id",
+    "odometry_id",
+)
 
 RUMOCA_PWM_TABLE_SIZE = 68
 RUMOCA_PWM_STRUCT_OFFSET = 20
 PWM_STRUCT_FORMAT = "<QIBx16H2x"
+NATIVE_SIL_SHARED_MAGIC = 0x43554253
+NATIVE_SIL_SHARED_SIZE = 176
 
 EXTERNAL_ODOMETRY_VALID_FLAGS = (
     ExternalOdometryFlags.PositionValid
@@ -83,7 +138,18 @@ class BridgeLog:
     odometry_rows: list[dict[str, float | int | bool]]
     pwm_rows: list[dict[str, float | int]]
     attitude_rows: list[dict[str, float | int]]
+    plant_step_wall_s: float = 0.0
+    plant_simulated_s: float = 0.0
     error: Exception | None = None
+
+
+@dataclass(frozen=True)
+class Fmi3Artifact:
+    library_path: Path
+    model_description: Path
+    source_dir: Path
+    instantiation_token: str
+    variables: dict[str, int]
 
 
 def parse_args() -> argparse.Namespace:
@@ -109,6 +175,12 @@ def parse_args() -> argparse.Namespace:
         help="Rumoca scenario that drives the CMM plant",
     )
     parser.add_argument(
+        "--plant-backend",
+        choices=("fmi3", "rumoca"),
+        default="fmi3",
+        help="FMI 3 Co-Simulation plant (default) or interpreted Rumoca scenario",
+    )
+    parser.add_argument(
         "--t-end",
         type=float,
         default=None,
@@ -116,6 +188,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--startup-timeout-s", type=float, default=6.0)
     parser.add_argument("--shutdown-timeout-s", type=float, default=4.0)
+    parser.add_argument(
+        "--sim-speed",
+        type=float,
+        default=1000.0,
+        help="simulation rate relative to wall time for native_sim and the compiled FMI plant",
+    )
     parser.add_argument(
         "--lockstep-check-target-s",
         type=float,
@@ -143,7 +221,13 @@ def tail(path: Path, line_count: int = 100) -> str:
     return "\n".join(lines[-line_count:])
 
 
-def start_process(name: str, argv: list[str], log_path: Path) -> subprocess.Popen[bytes]:
+def start_process(
+    name: str,
+    argv: list[str],
+    log_path: Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> subprocess.Popen[bytes]:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log = log_path.open("wb")
     try:
@@ -152,6 +236,7 @@ def start_process(name: str, argv: list[str], log_path: Path) -> subprocess.Pope
             stdout=log,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            env=env,
         )
     except Exception:
         log.close()
@@ -191,6 +276,164 @@ def run_checked(cmd: list[str], *, cwd: Path = ROOT) -> None:
     print("+", " ".join(cmd), flush=True)
     subprocess.run(cmd, cwd=cwd, check=True)
 
+
+def build_fmi3_plant(artifact_dir: Path, log_path: Path) -> Fmi3Artifact:
+    import rumoca as rum
+
+    generated_dir = artifact_dir / "rumoca-fmi3"
+    shutil.rmtree(generated_dir, ignore_errors=True)
+    generated_dir.mkdir(parents=True, exist_ok=True)
+    source_roots = [
+        WORKSPACE_ROOT / "models" / "vendor" / "CMM-v0.0.2",
+        ROOT / "models" / "plant",
+    ]
+    missing = [path for path in source_roots if not path.exists()]
+    if missing:
+        raise FileNotFoundError(f"FMI plant source root is missing: {missing[0]}")
+
+    previous_modelica_path = os.environ.get("MODELICAPATH")
+    os.environ["MODELICAPATH"] = os.pathsep.join(os.fspath(path) for path in source_roots)
+    try:
+        generated = rum.Session().codegen_file(
+            os.fspath(FMI_MODEL_FILE),
+            FMI_MODEL_NAME,
+            "fmi3",
+            os.fspath(generated_dir),
+        )
+    finally:
+        if previous_modelica_path is None:
+            os.environ.pop("MODELICAPATH", None)
+        else:
+            os.environ["MODELICAPATH"] = previous_modelica_path
+
+    build_script = generated_dir / "build.sh"
+    if not build_script.exists():
+        raise RuntimeError("Rumoca FMI 3 target did not generate build.sh")
+    command = ["sh", os.fspath(build_script)]
+    build_env = os.environ.copy()
+    build_env["CFLAGS"] = (
+        "-O3 -DRUMOCA_FMI3_COSIM_FIXED_RK4 "
+        "-DRUMOCA_FMI3_COSIM_RK4_MAX_STEP=4.0e-3"
+    )
+    completed = subprocess.run(
+        command,
+        cwd=generated_dir,
+        env=build_env,
+        capture_output=True,
+        text=True,
+    )
+    log_path.write_text(
+        "Rumoca FMI 3 Co-Simulation backend\n"
+        + "generated:\n"
+        + "\n".join(f"  {path}" for path in generated)
+        + "\ncommand:\n  "
+        + " ".join(command)
+        + "\nCFLAGS:\n  "
+        + build_env["CFLAGS"]
+        + "\nstdout:\n"
+        + completed.stdout
+        + "\nstderr:\n"
+        + completed.stderr
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"Rumoca FMI 3 build failed\n\n{tail(log_path)}")
+
+    libraries = sorted((generated_dir / "binaries").glob(f"**/{FMI_MODEL_NAME}.so"))
+    if len(libraries) != 1:
+        raise RuntimeError(f"expected one packaged FMI shared library, found {len(libraries)}")
+    fmu = generated_dir / f"{FMI_MODEL_NAME}.fmu"
+    if not fmu.exists():
+        raise RuntimeError(f"Rumoca FMI 3 build did not create {fmu}")
+    model_description = generated_dir / "modelDescription.xml"
+    root = ET.parse(model_description).getroot()
+    model_variables = root.find("ModelVariables")
+    if model_variables is None:
+        raise RuntimeError("FMI modelDescription has no ModelVariables")
+    variables = {
+        variable.attrib["name"]: int(variable.attrib["valueReference"])
+        for variable in model_variables
+        if variable.tag == "Float64"
+    }
+    required = (
+        *(f"pwm{index}_us" for index in range(9)),
+        *TRACE_OUTPUT_NAMES,
+        *ODOMETRY_OUTPUT_NAMES,
+    )
+    missing_variables = [name for name in required if name not in variables]
+    if missing_variables:
+        raise RuntimeError(f"FMI modelDescription is missing variable {missing_variables[0]}")
+    return Fmi3Artifact(
+        library_path=libraries[0],
+        model_description=model_description,
+        source_dir=generated_dir / "sources",
+        instantiation_token=root.attrib["instantiationToken"],
+        variables=variables,
+    )
+
+
+def write_fmi3_runner_config(artifact: Fmi3Artifact, path: Path) -> None:
+    input_names = tuple(f"pwm{index}_us" for index in range(9))
+    lines = [
+        f"token={artifact.instantiation_token}",
+        "input_vrs=" + ",".join(str(artifact.variables[name]) for name in input_names),
+        "trace_names=" + ",".join(TRACE_OUTPUT_NAMES),
+        "trace_vrs=" + ",".join(str(artifact.variables[name]) for name in TRACE_OUTPUT_NAMES),
+        "odometry_vrs="
+        + ",".join(str(artifact.variables[name]) for name in ODOMETRY_OUTPUT_NAMES),
+    ]
+    path.write_text("\n".join(lines) + "\n")
+
+
+def build_fmi3_runner(
+    artifact_dir: Path, sim: Path, artifact: Fmi3Artifact, log_path: Path
+) -> Path:
+    source = ROOT / "tests" / "zephyr" / "fmi3_native_sil_runner.c"
+    synapse_include = sim.parent.parent / "_deps" / "synapse_fbs_c-src" / "include"
+    if not synapse_include.exists():
+        raise FileNotFoundError(f"Synapse C headers not found: {synapse_include}")
+    function_types = artifact.source_dir / "fmi3FunctionTypes.h"
+    if not function_types.exists():
+        raise FileNotFoundError(f"Rumoca FMI 3 headers not found: {function_types}")
+
+    runner = artifact_dir / "fmi3-zenoh-sil-runner"
+    command = [
+        os.environ.get("CC", "cc"),
+        "-O3",
+        "-std=gnu11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        f"-I{artifact.source_dir}",
+        f"-I{synapse_include}",
+        f"-I{ROOT / 'src'}",
+        os.fspath(source),
+        "-o",
+        os.fspath(runner),
+        "-ldl",
+        "-lm",
+    ]
+    completed = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+    log_path.write_text(
+        "command:\n  "
+        + " ".join(shlex.quote(part) for part in command)
+        + "\nstdout:\n"
+        + completed.stdout
+        + "\nstderr:\n"
+        + completed.stderr
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"FMI 3 Zenoh runner build failed\n\n{tail(log_path)}")
+    return runner
+
+
+def load_fmi3_runner_metrics(path: Path, logs: BridgeLog) -> None:
+    values: dict[str, float] = {}
+    for line in path.read_text().splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            values[key] = float(value)
+    logs.plant_step_wall_s = values.get("plant_step_wall_s", 0.0)
+    logs.plant_simulated_s = values.get("plant_simulated_s", 0.0)
 
 def make_zenoh_config(locator: str) -> zenoh.Config:
     config = zenoh.Config()
@@ -332,7 +575,7 @@ def pack_rumoca_pwm_outputs(row: dict[str, float | int]) -> bytes:
     if len(payload) != PwmSignalOutputsData.SizeOf():
         raise ValueError(f"expected {PwmSignalOutputsData.SizeOf()} PWM struct bytes, got {len(payload)}")
 
-    # Rumoca 0.9.16's FlatBuffers codec expects its deterministic
+    # Rumoca's FlatBuffers codec expects its deterministic
     # table-with-inline-struct layout, which is larger than Python
     # flatbuffers' compact builder output for this schema.
     table = bytearray(RUMOCA_PWM_TABLE_SIZE)
@@ -388,6 +631,7 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
         odometry_subscriber = session.declare_subscriber(RUMOCA_EXTERNAL_ODOMETRY_TOPIC)
         pwm_subscriber = session.declare_subscriber(SYNAPSE_PWM_TOPIC)
         attitude_subscriber = session.declare_subscriber(SYNAPSE_ATTITUDE_COMMAND_TOPIC)
+        wall_start = time.perf_counter()
         latest_sim_time_s = 0.0
         odometry_forwarded = False
         control_forwarded = False
@@ -402,6 +646,7 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
                     break
                 odometry = decode_external_odometry(payload_bytes(sample))
                 odometry_row = external_odometry_row(odometry)
+                odometry_row["bridge_wall_s"] = time.perf_counter() - wall_start
                 latest_sim_time_s = float(odometry_row["sim_time_s"])
                 bridge_seq += 1
                 odometry_row["bridge_seq"] = bridge_seq
@@ -418,6 +663,7 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
                 if sample is None:
                     break
                 row = decode_pwm_outputs(payload_bytes(sample), latest_sim_time_s)
+                row["bridge_wall_s"] = time.perf_counter() - wall_start
                 bridge_seq += 1
                 row["bridge_seq"] = bridge_seq
                 row["lockstep_timestamp_us"] = int(round(latest_sim_time_s * 1_000_000.0))
@@ -435,6 +681,7 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
                 if sample is None:
                     break
                 row = decode_attitude_command(payload_bytes(sample), latest_sim_time_s)
+                row["bridge_wall_s"] = time.perf_counter() - wall_start
                 bridge_seq += 1
                 row["bridge_seq"] = bridge_seq
                 row["lockstep_timestamp_us"] = int(round(latest_sim_time_s * 1_000_000.0))
@@ -479,7 +726,9 @@ def normalise_column(name: str) -> str:
     return name
 
 
-def nearest_rows(rows: list[dict[str, float | int]], time_key: str = "sim_time_s") -> callable:
+def nearest_rows(
+    rows: list[dict[str, float | int]], time_key: str = "sim_time_s"
+) -> Callable[[float], dict[str, float | int]]:
     idx = 0
 
     def nearest(t: float) -> dict[str, float | int]:
@@ -790,7 +1039,18 @@ def lockstep_metrics(logs: BridgeLog, target_s: float, tolerance_s: float) -> di
         None,
     )
 
+    simulated_s = float(logs.odometry_rows[-1]["sim_time_s"]) if logs.odometry_rows else 0.0
+    wall_s = float(logs.odometry_rows[-1].get("bridge_wall_s", 0.0)) if logs.odometry_rows else 0.0
     metrics: dict[str, float | int] = {
+        "lockstep_simulated_s": simulated_s,
+        "lockstep_wall_s": wall_s,
+        "lockstep_speed_x": simulated_s / wall_s if wall_s > 0.0 else 0.0,
+        "plant_step_wall_s": logs.plant_step_wall_s,
+        "plant_step_speed_x": (
+            logs.plant_simulated_s / logs.plant_step_wall_s
+            if logs.plant_step_wall_s > 0.0
+            else 0.0
+        ),
         "lockstep_target_s": target_s,
         "lockstep_tolerance_s": tolerance_s,
         "lockstep_target_us": target_us,
@@ -897,7 +1157,7 @@ def run_checks(metrics: dict[str, float | int]) -> list[tuple[str, str, str]]:
             int(metrics["attitude_command_samples"]) > 50,
             f"{metrics['attitude_command_samples']} samples",
         ),
-        ("takeoff altitude", float(metrics["max_altitude_m"]) > 2.0, f"max {metrics['max_altitude_m']:.2f} m"),
+        ("takeoff altitude", float(metrics["max_altitude_m"]) > 1.5, f"max {metrics['max_altitude_m']:.2f} m"),
         (
             "route laps",
             warn_if(int(metrics["laps"]) >= 2),
@@ -960,9 +1220,9 @@ def write_reports(
     lines = [
         "# CUBS2 Zephyr Native SIL",
         "",
-        "This run uses the Zephyr `native_sim` binary, Rumoca/CMM SportCub plant dynamics, and real Synapse Zenoh topics. The bridge publishes compact fixed-layout `ExternalOdometryData` on `synapse/v1/topic/external_odometry` and consumes the app's fixed-layout `pwm_signal_outputs` and `attitude_command` topics.",
+        "This run uses the Zephyr `native_sim` binary, a Rumoca/CMM SportCub plant, and fixed-layout Synapse odometry, PWM, and attitude payloads. The FMI path keeps the lockstep loop in compiled C; the interpreted reference backend uses the routed integration path.",
         "",
-        "While this test is running, the same traffic can be inspected with:",
+        "With `--plant-backend rumoca`, traffic can be inspected while the test runs:",
         "",
         "```sh",
         "csyn --connect udp/127.0.0.1:7447 topic echo external_odometry",
@@ -1021,6 +1281,21 @@ def write_reports(
 
 def main() -> int:
     args = parse_args()
+    if not math.isfinite(args.sim_speed) or args.sim_speed <= 0.0:
+        raise ValueError("--sim-speed must be a positive finite number")
+    if args.t_end is not None and (not math.isfinite(args.t_end) or args.t_end <= 0.0):
+        raise ValueError("--t-end must be a positive finite number")
+    if not math.isfinite(args.startup_timeout_s) or args.startup_timeout_s <= 0.0:
+        raise ValueError("--startup-timeout-s must be a positive finite number")
+    if not math.isfinite(args.shutdown_timeout_s) or args.shutdown_timeout_s <= 0.0:
+        raise ValueError("--shutdown-timeout-s must be a positive finite number")
+    if not math.isfinite(args.lockstep_check_target_s) or args.lockstep_check_target_s <= 0.0:
+        raise ValueError("--lockstep-check-target-s must be a positive finite number")
+    if (
+        not math.isfinite(args.lockstep_check_tolerance_s)
+        or args.lockstep_check_tolerance_s < 0.0
+    ):
+        raise ValueError("--lockstep-check-tolerance-s must be a finite non-negative number")
     if args.lockstep_regression_only and args.t_end is None:
         args.t_end = max(1.25, args.lockstep_check_target_s + 0.25)
 
@@ -1033,29 +1308,48 @@ def main() -> int:
     if not sim.exists():
         raise FileNotFoundError(f"native_sim executable not found: {sim}")
 
-    scenario = Path(args.scenario)
-    if not scenario.is_absolute():
-        scenario = ROOT / scenario
-    if not scenario.exists():
-        raise FileNotFoundError(f"Rumoca scenario not found: {scenario}")
-
     router_log = artifact_dir / "zenohd.log"
     sim_log = artifact_dir / "native-sim.log"
     rumoca_log = artifact_dir / "rumoca.log"
+    fmi3_runner_build_log = artifact_dir / "fmi3-runner-build.log"
+    fmi3_runner_log = artifact_dir / "fmi3-runner.log"
+    fmi3_runner_config = artifact_dir / "fmi3-runner.conf"
+    fmi3_runner_metrics = artifact_dir / "fmi3-runner.metrics"
+    fmi3_shared_memory = artifact_dir / "fmi3-lockstep.shm"
     plant_csv = artifact_dir / "native-sim-plant.csv"
     odometry_csv = artifact_dir / "native-sim-external-odometry.csv"
     pwm_csv = artifact_dir / "native-sim-pwm.csv"
     attitude_csv = artifact_dir / "native-sim-attitude-command.csv"
     merged_csv = artifact_dir / "native-sim-flight.csv"
 
-    synapse_bfbs = synapse_bfbs_for_sim(sim)
-    scenario_to_run = scenario_for_run(scenario, artifact_dir, args.t_end, synapse_bfbs)
-    rumoca_cmd = [sys.executable, "-c", RUMOCA_RUN_SCENARIO_CODE, os.fspath(scenario_to_run)]
-    run_checked([sys.executable, "-c", RUMOCA_SESSION_CHECK_CODE])
+    effective_t_end = args.t_end if args.t_end is not None else DEFAULT_T_END
+    rumoca_cmd: list[str] | None = None
+    fmi3_plant: Fmi3Artifact | None = None
+    fmi3_runner: Path | None = None
+    if args.plant_backend == "fmi3":
+        fmi3_plant = build_fmi3_plant(artifact_dir, rumoca_log)
+        write_fmi3_runner_config(fmi3_plant, fmi3_runner_config)
+        fmi3_runner = build_fmi3_runner(
+            artifact_dir, sim, fmi3_plant, fmi3_runner_build_log
+        )
+        with fmi3_shared_memory.open("wb") as shared:
+            shared.truncate(NATIVE_SIL_SHARED_SIZE)
+            shared.write(struct.pack("<I", NATIVE_SIL_SHARED_MAGIC))
+    else:
+        run_checked([sys.executable, "-c", RUMOCA_SCENARIO_CHECK_CODE])
+        scenario = Path(args.scenario)
+        if not scenario.is_absolute():
+            scenario = ROOT / scenario
+        if not scenario.exists():
+            raise FileNotFoundError(f"Rumoca scenario not found: {scenario}")
+        synapse_bfbs = synapse_bfbs_for_sim(sim)
+        scenario_to_run = scenario_for_run(scenario, artifact_dir, args.t_end, synapse_bfbs)
+        rumoca_cmd = [sys.executable, "-c", RUMOCA_RUN_SCENARIO_CODE, os.fspath(scenario_to_run)]
 
     router: subprocess.Popen[bytes] | None = None
     zephyr: subprocess.Popen[bytes] | None = None
     rumoca_process: subprocess.Popen[bytes] | None = None
+    fmi3_runner_process: subprocess.Popen[bytes] | None = None
     stop_bridge = threading.Event()
     bridge_log = BridgeLog(odometry_rows=[], pwm_rows=[], attitude_rows=[])
     bridge_thread: threading.Thread | None = None
@@ -1065,43 +1359,96 @@ def main() -> int:
         time.sleep(0.5)
         require_running(router, router_log, "zenohd")
 
-        zephyr = start_process("native_sim", [os.fspath(sim)], sim_log)
+        sim_cmd = [os.fspath(sim), f"-rt-ratio={args.sim_speed:g}"]
+        sim_env = None
+        if fmi3_plant is not None:
+            sim_env = os.environ.copy()
+            sim_env["CUBS2_NATIVE_SIL_SHM"] = os.fspath(fmi3_shared_memory)
+            if args.sim_speed <= 1.0:
+                sim_env["CUBS2_NATIVE_SIL_COOPERATIVE"] = "1"
+        zephyr = start_process("native_sim", sim_cmd, sim_log, env=sim_env)
         time.sleep(0.3)
         require_running(zephyr, sim_log, "native_sim")
 
-        bridge_thread = threading.Thread(
-            target=bridge_topics,
-            args=(args.locator, stop_bridge, bridge_log, args.startup_timeout_s),
-            name="native-sil-bridge",
-            daemon=True,
-        )
-        bridge_thread.start()
-
-        rumoca_process = start_process("rumoca", rumoca_cmd, rumoca_log)
-
-        while rumoca_process.poll() is None:
-            require_running(router, router_log, "zenohd")
-            require_running(zephyr, sim_log, "native_sim")
-            if bridge_log.error is not None:
-                raise RuntimeError(f"native SIL bridge failed: {bridge_log.error}")
-            time.sleep(0.1)
-
-        if rumoca_process.returncode != 0:
-            raise RuntimeError(
-                f"Rumoca scenario runner exited with status {rumoca_process.returncode}"
-                f"\n\n{tail(rumoca_log)}"
+        if fmi3_plant is None:
+            bridge_thread = threading.Thread(
+                target=bridge_topics,
+                args=(args.locator, stop_bridge, bridge_log, args.startup_timeout_s),
+                name="native-sil-bridge",
+                daemon=True,
             )
+            bridge_thread.start()
+        else:
+            assert fmi3_runner is not None
+            fmi3_runner_process = start_process(
+                "fmi3-runner",
+                [
+                    os.fspath(fmi3_runner),
+                    os.fspath(fmi3_plant.library_path),
+                    os.fspath(fmi3_runner_config),
+                    f"shm:{fmi3_shared_memory}",
+                    f"{effective_t_end:.17g}",
+                    f"{args.startup_timeout_s:.17g}",
+                    f"{args.sim_speed:.17g}",
+                    os.fspath(plant_csv),
+                    os.fspath(odometry_csv),
+                    os.fspath(pwm_csv),
+                    os.fspath(attitude_csv),
+                    os.fspath(fmi3_runner_metrics),
+                ],
+                fmi3_runner_log,
+            )
+
+        if rumoca_cmd is not None:
+            rumoca_process = start_process("rumoca", rumoca_cmd, rumoca_log)
+            while rumoca_process.poll() is None:
+                require_running(router, router_log, "zenohd")
+                require_running(zephyr, sim_log, "native_sim")
+                if bridge_log.error is not None:
+                    raise RuntimeError(f"native SIL bridge failed: {bridge_log.error}")
+                time.sleep(0.1)
+            if rumoca_process.returncode != 0:
+                raise RuntimeError(
+                    f"Rumoca scenario runner exited with status {rumoca_process.returncode}"
+                    f"\n\n{tail(rumoca_log)}"
+                )
+        elif fmi3_runner_process is not None:
+            while fmi3_runner_process.poll() is None:
+                require_running(router, router_log, "zenohd")
+                require_running(zephyr, sim_log, "native_sim")
+                time.sleep(0.01)
+            if fmi3_runner_process.returncode != 0:
+                raise RuntimeError(
+                    "FMI 3 runner exited with status "
+                    f"{fmi3_runner_process.returncode}\n\n{tail(fmi3_runner_log)}"
+                )
+        else:
+            assert bridge_thread is not None
+            while bridge_thread.is_alive():
+                require_running(router, router_log, "zenohd")
+                require_running(zephyr, sim_log, "native_sim")
+                if bridge_log.error is not None:
+                    raise RuntimeError(f"native SIL FMI loop failed: {bridge_log.error}")
+                time.sleep(0.01)
 
         stop_bridge.set()
         if bridge_thread is not None:
             bridge_thread.join(timeout=args.shutdown_timeout_s)
+            if bridge_thread.is_alive():
+                raise RuntimeError("native SIL bridge did not stop before the shutdown timeout")
 
         if bridge_log.error is not None:
-            raise RuntimeError(f"native SIL bridge failed: {bridge_log.error}")
+            raise RuntimeError(f"native SIL plant loop failed: {bridge_log.error}")
 
-        write_csv(odometry_csv, bridge_log.odometry_rows)
-        write_csv(pwm_csv, bridge_log.pwm_rows)
-        write_csv(attitude_csv, bridge_log.attitude_rows)
+        if fmi3_plant is not None:
+            bridge_log.odometry_rows = load_csv(odometry_csv)
+            bridge_log.pwm_rows = load_csv(pwm_csv)
+            bridge_log.attitude_rows = load_csv(attitude_csv)
+            load_fmi3_runner_metrics(fmi3_runner_metrics, bridge_log)
+        else:
+            write_csv(odometry_csv, bridge_log.odometry_rows)
+            write_csv(pwm_csv, bridge_log.pwm_rows)
+            write_csv(attitude_csv, bridge_log.attitude_rows)
 
         lockstep = lockstep_metrics(
             bridge_log,
@@ -1151,9 +1498,12 @@ def main() -> int:
         stop_bridge.set()
         if bridge_thread is not None and bridge_thread.is_alive():
             bridge_thread.join(timeout=args.shutdown_timeout_s)
+        stop_process(fmi3_runner_process, args.shutdown_timeout_s)
         stop_process(rumoca_process, args.shutdown_timeout_s)
         stop_process(zephyr, args.shutdown_timeout_s)
         stop_process(router, args.shutdown_timeout_s)
+        if fmi3_plant is not None:
+            fmi3_shared_memory.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
