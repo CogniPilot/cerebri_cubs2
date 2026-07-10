@@ -149,8 +149,8 @@ equation
   wx1 = U / Vt;
   wx2 = V_frd / Vt;
   wx3 = W_frd / Vt;
-  refx = if wx3 * wx3 < wx1 * wx1 then 0.0 else 1.0;
-  refz = if wx3 * wx3 < wx1 * wx1 then 1.0 else 0.0;
+  refx = noEvent(if wx3 * wx3 < wx1 * wx1 then 0.0 else 1.0);
+  refz = noEvent(if wx3 * wx3 < wx1 * wx1 then 1.0 else 0.0);
   rdot = refx * wx1 + refz * wx3;
   wzt1 = refx - rdot * wx1;
   wzt2 = -rdot * wx2;
@@ -237,11 +237,11 @@ equation
     wh_lateral_scale[i] =
       min(1.0, ground_mu * wh_normal[i] / wh_lateral_mag[i]);
 
-    wh_Fw[1, i] =
-      if p[3] + wh_z_w[i] < 0.0 then wh_lateral_scale[i] * wh_lateral_x[i] else 0.0;
-    wh_Fw[2, i] =
-      if p[3] + wh_z_w[i] < 0.0 then wh_lateral_scale[i] * wh_lateral_y[i] else 0.0;
-    wh_Fw[3, i] = if p[3] + wh_z_w[i] < 0.0 then wh_normal[i] else 0.0;
+    wh_Fw[1, i] = noEvent(
+      if p[3] + wh_z_w[i] < 0.0 then wh_lateral_scale[i] * wh_lateral_x[i] else 0.0);
+    wh_Fw[2, i] = noEvent(
+      if p[3] + wh_z_w[i] < 0.0 then wh_lateral_scale[i] * wh_lateral_y[i] else 0.0);
+    wh_Fw[3, i] = noEvent(if p[3] + wh_z_w[i] < 0.0 then wh_normal[i] else 0.0);
 
     wh_Fb[1, i] = R[1, 1] * wh_Fw[1, i] + R[2, 1] * wh_Fw[2, i] + R[3, 1] * wh_Fw[3, i];
     wh_Fb[2, i] = R[1, 2] * wh_Fw[1, i] + R[2, 2] * wh_Fw[2, i] + R[3, 2] * wh_Fw[3, i];
@@ -253,11 +253,11 @@ equation
   end for;
 
   tailwheel_speed_sq = wh_vwx[3] * wh_vwx[3];
-  tailwheel_moment_z =
+  tailwheel_moment_z = noEvent(
     if p[3] + wh_z_w[3] < 0.0 then
       tailwheel_steer_gain * tailwheel_rud_rad * (sqrt(tailwheel_speed_sq + 1.0) - 1.0)
     else
-      0.0;
+      0.0);
 
   F_ground = {wh_Fb[1, 1] + wh_Fb[1, 2] + wh_Fb[1, 3],
               wh_Fb[2, 1] + wh_Fb[2, 2] + wh_Fb[2, 3],

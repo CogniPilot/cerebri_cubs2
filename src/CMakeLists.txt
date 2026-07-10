@@ -2,6 +2,7 @@ target_include_directories(app PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 
 target_sources(app PRIVATE
   main.c
+  native_sil_transport.c
 )
 
 if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)

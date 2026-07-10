@@ -6,6 +6,7 @@
 #include <csyn/csyn_zros.h>
 
 #include "FixedWingOuterLoop.h"
+#include "native_sil_transport.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -15,6 +16,7 @@
 
 #include <zros/zros_node.h>
 #include <zros/zros_pub.h>
+#include <zros/zros_sub.h>
 #include <zros/zros_topic.h>
 
 LOG_MODULE_REGISTER(cubs2, LOG_LEVEL_INF);
@@ -31,10 +33,9 @@ struct control_context {
 	synapse_topic_AttitudeEstimateData_t attitude_estimate;
 	synapse_topic_AttitudeCommandData_t attitude_command;
 	synapse_topic_ControlLoopMetricsData_t control_loop_metrics;
-	uint32_t external_odometry_generation;
-	uint32_t manual_generation;
 	uint32_t main_loop_us;
 	uint64_t lockstep_time_us;
+	uint64_t next_control_time_us;
 	bool lockstep_time_valid;
 	bool previous_auto_mode;
 };
@@ -47,20 +48,15 @@ static struct zros_pub g_vehicle_health_pub;
 static struct zros_pub g_attitude_estimate_pub;
 static struct zros_pub g_attitude_command_pub;
 static struct zros_pub g_control_loop_metrics_pub;
+static struct zros_sub g_external_odometry_sub;
+static struct zros_sub g_manual_sub;
 
 static bool read_external_odometry_if_updated(struct control_context *ctx)
 {
-	uint32_t generation = csyn_zros_generation(&topic_external_odometry);
-
-	if (generation == 0U || generation == ctx->external_odometry_generation) {
+	if (zros_sub_update(&g_external_odometry_sub) != 0) {
 		return false;
 	}
 
-	if (zros_topic_read(&topic_external_odometry, &ctx->external_odometry) != 0) {
-		return false;
-	}
-
-	ctx->external_odometry_generation = generation;
 	ctx->lockstep_time_us = ctx->external_odometry.timestamp_us;
 	ctx->lockstep_time_valid = true;
 	return true;
@@ -68,18 +64,7 @@ static bool read_external_odometry_if_updated(struct control_context *ctx)
 
 static bool read_manual_if_updated(struct control_context *ctx)
 {
-	uint32_t generation = csyn_zros_generation(&topic_manual_control);
-
-	if (generation == 0U || generation == ctx->manual_generation) {
-		return false;
-	}
-
-	if (zros_topic_read(&topic_manual_control, &ctx->manual) != 0) {
-		return false;
-	}
-
-	ctx->manual_generation = generation;
-	return true;
+	return zros_sub_update(&g_manual_sub) == 0;
 }
 
 static bool external_odometry_valid(const synapse_topic_ExternalOdometryData_t *odom)
@@ -177,6 +162,7 @@ static bool auto_mode_selected(const struct control_context *ctx)
 
 static int control_pubs_init(void)
 {
+	int rc;
 	struct {
 		struct zros_pub *pub;
 		struct zros_topic *topic;
@@ -195,11 +181,22 @@ static int control_pubs_init(void)
 	zros_node_init(&g_node, "cubs2_control");
 
 	for (size_t i = 0U; i < ARRAY_SIZE(pubs); i++) {
-		int rc = zros_pub_init(pubs[i].pub, &g_node, pubs[i].topic, pubs[i].msg);
+		rc = zros_pub_init(pubs[i].pub, &g_node, pubs[i].topic, pubs[i].msg);
 
 		if (rc != 0) {
 			return rc;
 		}
+	}
+
+	rc = zros_sub_init(&g_external_odometry_sub, &g_node, &topic_external_odometry,
+			   &g_control_ctx.external_odometry, 0.0);
+	if (rc != 0) {
+		return rc;
+	}
+	rc = zros_sub_init(&g_manual_sub, &g_node, &topic_manual_control,
+			   &g_control_ctx.manual, 0.0);
+	if (rc != 0) {
+		return rc;
 	}
 
 	return 0;
@@ -216,6 +213,23 @@ static uint64_t control_timestamp_us(const struct control_context *ctx)
 #endif
 
 	return (uint64_t)k_uptime_get() * 1000ULL;
+}
+
+static bool control_step_due(struct control_context *ctx)
+{
+#if defined(CONFIG_BOARD_NATIVE_SIM)
+	if (ctx->lockstep_time_us < ctx->next_control_time_us) {
+		return false;
+	}
+
+	ctx->next_control_time_us =
+		((ctx->lockstep_time_us / CUBS2_CONTROL_PERIOD_US) + 1U) *
+		CUBS2_CONTROL_PERIOD_US;
+#else
+	ARG_UNUSED(ctx);
+#endif
+
+	return true;
 }
 
 static void update_telemetry(struct control_context *ctx, bool auto_mode, uint64_t timestamp_us)
@@ -281,15 +295,40 @@ int main(void)
 	if (rc != 0) {
 		return rc;
 	}
+	rc = cubs2_native_sil_transport_start();
+	if (rc != 0) {
+		return rc;
+	}
 
 	LOG_INF("CUBS2 fixed-wing control starting");
 
 	while (true) {
 		uint32_t start_cycles = k_cycle_get_32();
 		csyn_rc_channels16_t auto_rc = {0};
+		bool odometry_updated;
 		bool auto_mode;
+		bool step_control;
 
-		(void)read_external_odometry_if_updated(ctx);
+#if defined(CONFIG_BOARD_NATIVE_SIM)
+		if (cubs2_native_sil_transport_enabled()) {
+			if (cubs2_native_sil_transport_receive(&ctx->external_odometry) != 0) {
+				return -EIO;
+			}
+			ctx->lockstep_time_us = ctx->external_odometry.timestamp_us;
+			ctx->lockstep_time_valid = true;
+			odometry_updated = true;
+		} else {
+			if (zros_sub_wait(&g_external_odometry_sub, K_FOREVER) != 0) {
+				continue;
+			}
+			odometry_updated = read_external_odometry_if_updated(ctx);
+		}
+		if (!odometry_updated) {
+			continue;
+		}
+#else
+		odometry_updated = read_external_odometry_if_updated(ctx);
+#endif
 		(void)read_manual_if_updated(ctx);
 
 		auto_mode = auto_mode_selected(ctx);
@@ -298,23 +337,36 @@ int main(void)
 			EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
 		}
 		ctx->previous_auto_mode = auto_mode;
+		step_control = control_step_due(ctx);
 
 		if (auto_mode) {
-			if (external_odometry_valid(&ctx->external_odometry)) {
+			if (step_control && external_odometry_valid(&ctx->external_odometry)) {
 				fixed_wing_map_input(&g_model, &ctx->external_odometry);
 				EFMI_STEP(FixedWingOuterLoop, &g_model);
 				fixed_wing_map_output(&g_model, &auto_rc);
-			} else {
+				ctx->control_rc = auto_rc;
+			} else if (!external_odometry_valid(&ctx->external_odometry)) {
 				idle_output(&auto_rc);
+				ctx->control_rc = auto_rc;
 			}
-			ctx->control_rc = auto_rc;
 		} else {
 			ctx->control_rc = ctx->manual.rc;
 		}
 
 		ctx->main_loop_us = k_cyc_to_us_floor32(k_cycle_get_32() - start_cycles);
 		publish_outputs(ctx, auto_mode);
+#if defined(CONFIG_BOARD_NATIVE_SIM)
+		if (cubs2_native_sil_transport_enabled()) {
+			if (cubs2_native_sil_transport_send(&ctx->pwm_outputs,
+						     &ctx->attitude_command) != 0) {
+				return -EIO;
+			}
+		} else {
+			k_yield();
+		}
+#else
 		k_sleep(K_NSEC(CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS));
+#endif
 	}
 
 	return 0;

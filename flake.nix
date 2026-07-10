@@ -3,10 +3,14 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    rumoca-src = {
+      url = "github:CogniPilot/rumoca/v0.9.19";
+      flake = false;
+    };
   };
 
   outputs =
-    { self, nixpkgs }:
+    { self, nixpkgs, rumoca-src }:
     let
       lib = nixpkgs.lib;
       supportedSystems = [
@@ -21,32 +25,24 @@
       defaultBoard = "mr_vmu_tropic";
       defaultNativeSimBoard = "native_sim";
       defaultNativeSim64Board = "native_sim/native/64";
-      rumocaVersion = "0.9.16";
+      rumocaVersion = "0.9.19";
       synapseFbsVersion = "0.5.0";
       mkRumocaPythonPackage =
         pkgs:
-        let
-          src = pkgs.fetchPypi {
-            pname = "rumoca";
-            version = rumocaVersion;
-            hash = "sha256-pWJ5B7RHLQcwV3FPzQo/TuRkBL39Q/M9DP8kob6Xy1w=";
-          };
-        in
         pkgs.python3Packages.buildPythonPackage {
           pname = "rumoca";
           version = rumocaVersion;
           pyproject = true;
 
-          inherit src;
-          sourceRoot = "rumoca-${rumocaVersion}";
-          cargoRoot = ".";
+          src = rumoca-src;
+          sourceRoot = "source/crates/rumoca-bind-python";
+          cargoRoot = "../..";
 
           cargoDeps = pkgs.rustPlatform.fetchCargoVendor {
-            inherit src;
-            sourceRoot = "rumoca-${rumocaVersion}";
+            src = rumoca-src;
             cargoRoot = ".";
             name = "rumoca-${rumocaVersion}-cargo-vendor";
-            hash = "sha256-TzZqaAc5+tiZbam5shvN+VRSh4UI8PUOZ4QaV/CUIYg=";
+            hash = "sha256-8KcX5LawzhwqQv7+yd65l4fLCQy+1x31tpCU6ec/ZGg=";
           };
 
           nativeBuildInputs = [
@@ -57,7 +53,7 @@
           ];
 
           postPatch = ''
-            chmod -R u+w .
+            chmod -R u+w ../..
           '';
 
           buildInputs = [
@@ -646,6 +642,8 @@
             name = "cubs2-native-sim-sil-run";
             runtimeInputs = [
               pkgs.coreutils
+              pkgs.stdenv.cc
+              pkgs.zip
               pkgs.zenoh
               nativeSimSilPythonEnv
             ];

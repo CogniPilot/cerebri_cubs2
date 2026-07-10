@@ -51,9 +51,22 @@ Inbound `ManualControlData` and `ExternalOdometryData` are fixed-layout struct
 payloads, and all outbound topics are fixed-layout struct payloads.
 
 Modelica code generation and SIL simulation run through the Rumoca Python
-binding. The Nix environment pins the Rumoca `v0.9.13` wheel and exports
+binding. The Nix environment pins the Rumoca `v0.9.19` package and exports
 `CUBS2_RUMOCA_PYTHON` for CMake. For non-Nix builds, use a Python interpreter
 with `rumoca` installed or set `CUBS2_RUMOCA_PYTHON=/path/to/python`.
+
+The default Nix input uses the portable upstream `v0.9.19` source. To test a
+Rumoca workspace next to this repository without changing `flake.nix` or
+`flake.lock`, override that input with a relative path:
+
+```sh
+nix run --override-input rumoca-src \
+  "git+file://$(realpath ../rumoca)?ref=main" \
+  .#native-sim-sil-test
+```
+
+The override can point at any Rumoca Git checkout. No user-specific absolute
+path is stored in the Nix configuration.
 
 The flight SIL test passes each `rumoca-scenario.*.toml` file to the Rumoca
 Python API, so Rumoca owns the physics, controller compilation, solver, and
@@ -91,23 +104,28 @@ nix run .#build
 The flake also exposes `.#build-native-sim`, `.#build-native-sim-64`, `.#flash`,
 `.#menuconfig`, and an inlined `nixosModules.default` for NixOS host setup.
 
-To run the Zephyr `native_sim` app through Zenoh, use:
+To run the Zephyr `native_sim` SIL test, use:
 
 ```sh
 nix run .#west-update
 nix run .#native-sim-sil-test
 ```
 
-The native-sim SIL runner starts `zenohd` on `udp/127.0.0.1:7447`, launches
-`build-native_sim/zephyr/zephyr.exe`, and passes
-`tests/zephyr/rumoca-scenario.native-sim.toml` to the Rumoca Python
-`Session.run_scenario(...)` path. The TOML owns the lockstep, Zenoh, schema,
-publish/subscribe, debug log, physics, and solver setup. Rumoca uses the
-`synapse_fbs` FlatBuffers wrapper schemas for the SIL transport, while the
-bridge forwards fixed-layout Synapse topic payloads to and from the Zephyr app.
-It then writes CSV, PNG, Markdown, and HTML artifacts that grade route laps,
-altitude, velocity, bank, pitch, crosstrack tracking, and the 1 s native-sim
-lockstep boot-time acknowledgement.
+The default path generates and builds an FMI 3 Co-Simulation FMU with Rumoca,
+then runs the FMU and the Zephyr controller in compiled C. A native-only shared
+memory transport carries the fixed-layout Synapse odometry, PWM, and attitude
+structs without putting the per-step loop in Python. Python only orchestrates
+the processes and produces CSV, PNG, Markdown, and HTML checks. Hardware builds
+do not include the native transport behavior.
+
+The generated source FMU includes the official FMI 3.0.2 headers and validates
+and simulates with FMPy. The native runner uses those generated function types;
+its custom code is limited to the Zephyr lockstep transport, pacing, and test
+telemetry rather than a separate FMI ABI.
+
+The interpreted Rumoca scenario remains available as a routed reference with
+`--plant-backend rumoca`; its TOML owns the solver, Zenoh, schema, and trace
+settings.
 
 For a focused lockstep timing regression without the full flight-quality run,
 reuse an existing native-sim executable:
@@ -119,14 +137,26 @@ nix run .#native-sim-sil-run -- \
   --lockstep-regression-only
 ```
 
-The same traffic is inspectable from another terminal while the test is
-running:
+With `--plant-backend rumoca`, the same traffic is inspectable from another
+terminal while the test is running:
 
 ```sh
 nix develop -c csyn --connect udp/127.0.0.1:7447 topic echo external_odometry
 nix develop -c csyn --connect udp/127.0.0.1:7447 topic hz pwm_signal_outputs
 nix develop -c csyn --connect udp/127.0.0.1:7447 topic echo attitude_command
 ```
+
+The compiled FMI path can also be paced for interactive controller diagnostics:
+
+```sh
+nix run .#native-sim-sil-run -- --sim-speed 1
+nix develop -c csyn --connect udp/127.0.0.1:7447 topic hz pwm_signal_outputs
+```
+
+At realtime speed the native lockstep wait yields to the CSyn/Zenoh threads, so
+the controller's outbound topics remain available to the CLI. The FMI plant's
+inbound odometry stays on the private shared-memory link; use
+`--plant-backend rumoca` when that inbound topic must also be inspected.
 
 A Zenoh ground station can connect to the same router while the native_sim
 executable is running.
