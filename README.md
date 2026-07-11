@@ -7,11 +7,11 @@ piloted aircraft.
 
 The board is an Ethernet/Zenoh control node:
 
-- subscribe to `synapse/v1/topic/manual_control_command`
-- subscribe to `synapse/v1/topic/external_odometry`
+- subscribe to `manual`
+- subscribe to `odom`
 - mirror inbound payloads from csyn into zros
 - run the Rumoca-generated fixed-wing eFMI controller from zros state
-- publish `synapse/v1/topic/pwm_signal_outputs`
+- publish `pwm`
 - publish `vehicle_health`, `attitude_estimate`, `attitude_command`, and
   `control_loop_metrics` synapse topics for controller diagnostics
 
@@ -47,7 +47,7 @@ west build -b mr_vmu_tropic cerebri_cubs2
 The csyn module downloads the pinned `synapse_fbs-c.tar.gz` release asset
 and uses the generated C headers from that release, so the schema version is
 locked by csyn rather than per app. No local `flatc` install is required.
-Inbound `ManualControlData` and `ExternalOdometryData` are fixed-layout struct
+Inbound `ManualControlData` and `OdometryData` are fixed-layout struct
 payloads, and all outbound topics are fixed-layout struct payloads.
 
 Modelica code generation and SIL simulation run through the Rumoca Python
@@ -73,6 +73,19 @@ Python API, so Rumoca owns the physics, controller compilation, solver, and
 scenario settings. Python only normalizes traces for checks and plots. CI runs
 the flight SIL test through `nix run .#flight-sil-test` and uploads the
 generated CSV, PNG, Markdown, and HTML report artifacts.
+
+The pattern defaults to four waypoints. Its active length and coordinates are
+tunable simulation parameters backed by a fixed four-waypoint capacity, so a new
+flight plan does not recompile the model. Repeat `--waypoint x,y,z` once per
+active waypoint:
+
+```sh
+nix run .#flight-sil-test -- \
+  --waypoint 0,0,3 \
+  --waypoint 30,0,3 \
+  --waypoint 30,20,3 \
+  --waypoint 0,20,3
+```
 
 Use separate build directories when switching boards:
 
@@ -141,16 +154,16 @@ With `--plant-backend rumoca`, the same traffic is inspectable from another
 terminal while the test is running:
 
 ```sh
-nix develop -c csyn --connect udp/127.0.0.1:7447 topic echo external_odometry
-nix develop -c csyn --connect udp/127.0.0.1:7447 topic hz pwm_signal_outputs
-nix develop -c csyn --connect udp/127.0.0.1:7447 topic echo attitude_command
+nix develop -c csyn --connect udp/127.0.0.1:7447 topic echo odom
+nix develop -c csyn --connect udp/127.0.0.1:7447 topic hz pwm
+nix develop -c csyn --connect udp/127.0.0.1:7447 topic echo att_sp
 ```
 
 The compiled FMI path can also be paced for interactive controller diagnostics:
 
 ```sh
 nix run .#native-sim-sil-run -- --sim-speed 1
-nix develop -c csyn --connect udp/127.0.0.1:7447 topic hz pwm_signal_outputs
+nix develop -c csyn --connect udp/127.0.0.1:7447 topic hz pwm
 ```
 
 At realtime speed the native lockstep wait yields to the CSyn/Zenoh threads, so

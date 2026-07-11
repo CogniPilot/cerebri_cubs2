@@ -15,6 +15,6 @@ version = "1"
 
 [sim]
 dt = 0.02
-t_end = 5.0
+t_end = 70.0
 solver = "rk-like"
 output = "artifacts/flight/pattern.csv"

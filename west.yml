@@ -35,8 +35,12 @@ manifest:
       path: modules/lib/zros
     - name: csyn
       remote: cognipilot
-      revision: 4e7a0c607bd307e96a118c9710e6144d6abdc48a # external_odometry bridge, synapse_fbs 0.5.0 release
+      revision: c1fdc903b5eb48e9a4362c716f50e658bed15961 # synapse_fbs 0.7.0, vehicle-owned topics
       path: modules/lib/csyn
+    - name: cerebri_modules
+      remote: cognipilot
+      revision: ef73a4f8adeb4385c34af4344c9af27e43e02033
+      path: modules/lib/cerebri_lockstep
     - name: modelica_models
       remote: cognipilot
       revision: 62ea9f97cec28e092c8e67c9f4a0dbb842f6233b # v0.0.2

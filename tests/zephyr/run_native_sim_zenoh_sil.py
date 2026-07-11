@@ -26,12 +26,16 @@ import xml.etree.ElementTree as ET
 
 import matplotlib
 import numpy as np
+import flatbuffers
 from synapse.topic.AttitudeCommandData import AttitudeCommandData
 from synapse.topic.ExternalOdometry import ExternalOdometry
 from synapse.topic.ExternalOdometryData import ExternalOdometryData
 from synapse.topic.ExternalOdometryFlags import ExternalOdometryFlags
 from synapse.topic.ExternalOdometryStatus import ExternalOdometryStatus
+from synapse.topic.Odometry import Odometry, OdometryAddData, OdometryEnd, OdometryStart
+from synapse.topic.OdometryData import CreateOdometryData, OdometryData
 from synapse.topic.PwmSignalOutputsData import PwmSignalOutputsData
+from synapse.topic_catalog import topic_by_name
 from synapse.types.Quaternionf import Quaternionf
 from synapse.types.RateTriplet import RateTriplet
 from synapse.types.Vec3f import Vec3f
@@ -44,9 +48,9 @@ import matplotlib.pyplot as plt
 ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = Path(os.environ.get("CUBS2_WORKSPACE_ROOT", ROOT.parent)).resolve()
 
-SYNAPSE_EXTERNAL_ODOMETRY_TOPIC = "synapse/v1/topic/external_odometry"
-SYNAPSE_PWM_TOPIC = "synapse/v1/topic/pwm_signal_outputs"
-SYNAPSE_ATTITUDE_COMMAND_TOPIC = "synapse/v1/topic/attitude_command"
+SYNAPSE_ODOMETRY_TOPIC = "odom"
+SYNAPSE_PWM_TOPIC = "pwm"
+SYNAPSE_ATTITUDE_COMMAND_TOPIC = "att_sp"
 RUMOCA_EXTERNAL_ODOMETRY_TOPIC = "cubs2/sil/external_odometry"
 RUMOCA_PWM_TOPIC = "cubs2/sil/pwm_signal_outputs"
 
@@ -113,7 +117,7 @@ RUMOCA_PWM_TABLE_SIZE = 68
 RUMOCA_PWM_STRUCT_OFFSET = 20
 PWM_STRUCT_FORMAT = "<QIBx16H2x"
 NATIVE_SIL_SHARED_MAGIC = 0x43554253
-NATIVE_SIL_SHARED_SIZE = 176
+NATIVE_SIL_SHARED_SIZE = 184
 
 EXTERNAL_ODOMETRY_VALID_FLAGS = (
     ExternalOdometryFlags.PositionValid
@@ -387,7 +391,7 @@ def write_fmi3_runner_config(artifact: Fmi3Artifact, path: Path) -> None:
 def build_fmi3_runner(
     artifact_dir: Path, sim: Path, artifact: Fmi3Artifact, log_path: Path
 ) -> Path:
-    source = ROOT / "tests" / "zephyr" / "fmi3_native_sil_runner.c"
+    source = ROOT / "tests" / "zephyr" / "fmi3_lockstep_runner.c"
     synapse_include = sim.parent.parent / "_deps" / "synapse_fbs_c-src" / "include"
     if not synapse_include.exists():
         raise FileNotFoundError(f"Synapse C headers not found: {synapse_include}")
@@ -395,7 +399,7 @@ def build_fmi3_runner(
     if not function_types.exists():
         raise FileNotFoundError(f"Rumoca FMI 3 headers not found: {function_types}")
 
-    runner = artifact_dir / "fmi3-zenoh-sil-runner"
+    runner = artifact_dir / "fmi3-lockstep-runner"
     command = [
         os.environ.get("CC", "cc"),
         "-O3",
@@ -405,7 +409,7 @@ def build_fmi3_runner(
         "-Werror",
         f"-I{artifact.source_dir}",
         f"-I{synapse_include}",
-        f"-I{ROOT / 'src'}",
+        f"-I{ROOT / 'subsys' / 'lockstep'}",
         os.fspath(source),
         "-o",
         os.fspath(runner),
@@ -422,7 +426,7 @@ def build_fmi3_runner(
         + completed.stderr
     )
     if completed.returncode != 0:
-        raise RuntimeError(f"FMI 3 Zenoh runner build failed\n\n{tail(log_path)}")
+        raise RuntimeError(f"FMI 3 lockstep runner build failed\n\n{tail(log_path)}")
     return runner
 
 
@@ -507,6 +511,55 @@ def decode_external_odometry(payload: bytes) -> ExternalOdometryData:
     if data is None:
         raise ValueError("ExternalOdometry payload has no data field")
     return data
+
+
+def odometry_contract() -> str:
+    info = topic_by_name("Odometry")
+    if info is None or not info.fixed_layout:
+        raise RuntimeError("synapse_fbs catalog has no fixed-layout Odometry topic")
+    return (
+        f"application/x-synapse-struct;type={info.wire_type};"
+        f"schema=sha256-128:{info.schema_hash}"
+    )
+
+
+def encode_odometry(data: ExternalOdometryData) -> bytes:
+    position = data.PositionEnuM(Vec3f())
+    attitude = data.Attitude(Quaternionf())
+    velocity = data.LinearVelocityEnuMS(Vec3f())
+    rates = data.AngularVelocityFluRadS(RateTriplet())
+    builder = flatbuffers.Builder(128)
+
+    OdometryStart(builder)
+    offset = CreateOdometryData(
+        builder,
+        data.TimestampUs(),
+        position.X(),
+        position.Y(),
+        position.Z(),
+        attitude.W(),
+        attitude.X(),
+        attitude.Y(),
+        attitude.Z(),
+        velocity.X(),
+        velocity.Y(),
+        velocity.Z(),
+        rates.Roll(),
+        rates.Pitch(),
+        rates.Yaw(),
+        data.Flags(),
+        data.Status(),
+        data.Id(),
+        data.SourceId(),
+        100,
+    )
+    OdometryAddData(builder, offset)
+    root = OdometryEnd(builder)
+    builder.Finish(root)
+    odometry = Odometry.GetRootAs(builder.Output()).Data()
+    if odometry is None:
+        raise RuntimeError("generated Odometry builder produced no payload")
+    return fixed_struct_payload(odometry, OdometryData.SizeOf())
 
 
 def tracking_valid(flags: int, status: int) -> bool:
@@ -651,8 +704,9 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
                 bridge_seq += 1
                 odometry_row["bridge_seq"] = bridge_seq
                 session.put(
-                    SYNAPSE_EXTERNAL_ODOMETRY_TOPIC,
-                    fixed_struct_payload(odometry, ExternalOdometryData.SizeOf()),
+                    SYNAPSE_ODOMETRY_TOPIC,
+                    encode_odometry(odometry),
+                    encoding=odometry_contract(),
                 )
                 odometry_forwarded = True
                 logs.odometry_rows.append(odometry_row)
@@ -1225,9 +1279,9 @@ def write_reports(
         "With `--plant-backend rumoca`, traffic can be inspected while the test runs:",
         "",
         "```sh",
-        "csyn --connect udp/127.0.0.1:7447 topic echo external_odometry",
-        "csyn --connect udp/127.0.0.1:7447 topic hz pwm_signal_outputs",
-        "csyn --connect udp/127.0.0.1:7447 topic echo attitude_command",
+        "csyn --connect udp/127.0.0.1:7447 topic echo odom",
+        "csyn --connect udp/127.0.0.1:7447 topic hz pwm",
+        "csyn --connect udp/127.0.0.1:7447 topic echo att_sp",
         "```",
         "",
         "## Checks",

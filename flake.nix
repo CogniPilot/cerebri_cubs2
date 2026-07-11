@@ -26,7 +26,7 @@
       defaultNativeSimBoard = "native_sim";
       defaultNativeSim64Board = "native_sim/native/64";
       rumocaVersion = "0.9.19";
-      synapseFbsVersion = "0.5.0";
+      synapseFbsVersion = "0.7.0";
       mkRumocaPythonPackage =
         pkgs:
         pkgs.python3Packages.buildPythonPackage {
@@ -82,7 +82,7 @@
 
           src = pkgs.fetchurl {
             url = "https://files.pythonhosted.org/packages/source/s/synapse-fbs/synapse_fbs-${synapseFbsVersion}.tar.gz";
-            hash = "sha256-ftpctkqYeoBE+bQTgPA+FWBWXwVbObcRcvJH3SEn9fg=";
+            hash = "sha256-iGe6Jj5nLQ5EOHCNAxenro3tGpF+RCwzUvZPOMlzVco=";
           };
 
           nativeBuildInputs = [
@@ -97,6 +97,7 @@
           doCheck = false;
           pythonImportsCheck = [
             "synapse.topic.ExternalOdometry"
+            "synapse.topic.Odometry"
             "synapse.topic.PwmSignalOutputs"
           ];
 
@@ -326,6 +327,7 @@
                 modules/hal/cmsis_6 \
                 modules/hal/nxp \
                 modules/lib/zenoh-pico \
+                modules/lib/cerebri_lockstep \
                 modules/lib/zros \
                 modules/lib/csyn \
                 modules/lib/zephyr_boards \

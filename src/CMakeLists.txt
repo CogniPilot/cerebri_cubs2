@@ -2,8 +2,15 @@ target_include_directories(app PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 
 target_sources(app PRIVATE
   main.c
-  native_sil_transport.c
 )
+
+target_sources_ifdef(CONFIG_CUBS2_FASTDYN app PRIVATE fastdyn_board.c)
+
+if(CONFIG_CUBS2_FASTDYN)
+  # app/libapp.a is linked before the board and SDK archives, so the FastDyn
+  # implementations below replace hardware-only weak/board hooks.
+  zephyr_link_libraries(-Wl,--allow-multiple-definition)
+endif()
 
 if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)
   zephyr_code_relocate(
