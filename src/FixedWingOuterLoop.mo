@@ -123,11 +123,11 @@ record RouteParameters
   Real altitudeLookaheadDistance(unit = "m") = 8.0;
   Real flightPathAngleLimit(unit = "rad") = 0.12;
   Real speedToAccelerationGain = 1.0;
-  Real crossTrackSteeringDistance(unit = "m") = 8.0
+  Real crossTrackSteeringDistance(unit = "m") = 4.0
     "atan steering distance; 45 deg correction occurs when |cross-track| = d";
-  Real waypointSwitchingDistance(unit = "m") = 5.0
+  Real waypointSwitchingDistance(unit = "m") = 7.0
     "base turn-radius lead distance for leg completion";
-  Real waypointTurnLeadTime(unit = "s") = 3.0
+  Real waypointTurnLeadTime(unit = "s") = 0.0
     "additional speed-scaled lead time for turn-command lag";
 end RouteParameters;
 
@@ -142,7 +142,7 @@ record TecsParameters
 end TecsParameters;
 
 record AttitudeParameters
-  Real takeoffAltitude(unit = "m") = 2.0;
+  Real takeoffAltitude(unit = "m") = 0.4;
   Real takeoffElevator = 0.15;
   Real trimElevator = 0.0;
   Real pitchTrimAngle(unit = "rad") = 0.0
@@ -574,7 +574,10 @@ algorithm
 
     airborne := pre(airborne) or (position_m[3] > attitudeParams.takeoffAltitude);
 
-    tecs.enabled := true;
+    // Keep the TECS integrators reset during ground roll. Enabling TECS before
+    // the aircraft is airborne accumulates an energy-state transient that
+    // cuts thrust immediately after takeoff.
+    tecs.enabled := pre(airborne) or (position_m[3] > attitudeParams.takeoffAltitude);
     tecs.setpoints.speed := desiredSpeed;
     tecs.setpoints.flightPathAngle := desiredFlightPathAngle;
     tecs.setpoints.heading := desiredHeading;

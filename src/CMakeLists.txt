@@ -2,7 +2,6 @@ target_include_directories(app PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 
 target_sources(app PRIVATE
   main.c
-  native_sil_transport.c
 )
 
 target_sources_ifdef(CONFIG_CUBS2_FASTDYN app PRIVATE fastdyn_board.c)

@@ -387,7 +387,7 @@ def write_fmi3_runner_config(artifact: Fmi3Artifact, path: Path) -> None:
 def build_fmi3_runner(
     artifact_dir: Path, sim: Path, artifact: Fmi3Artifact, log_path: Path
 ) -> Path:
-    source = ROOT / "tests" / "zephyr" / "fmi3_native_sil_runner.c"
+    source = ROOT / "tests" / "zephyr" / "fmi3_lockstep_runner.c"
     synapse_include = sim.parent.parent / "_deps" / "synapse_fbs_c-src" / "include"
     if not synapse_include.exists():
         raise FileNotFoundError(f"Synapse C headers not found: {synapse_include}")
@@ -395,7 +395,7 @@ def build_fmi3_runner(
     if not function_types.exists():
         raise FileNotFoundError(f"Rumoca FMI 3 headers not found: {function_types}")
 
-    runner = artifact_dir / "fmi3-zenoh-sil-runner"
+    runner = artifact_dir / "fmi3-lockstep-runner"
     command = [
         os.environ.get("CC", "cc"),
         "-O3",
@@ -405,7 +405,7 @@ def build_fmi3_runner(
         "-Werror",
         f"-I{artifact.source_dir}",
         f"-I{synapse_include}",
-        f"-I{ROOT / 'src'}",
+        f"-I{ROOT / 'subsys' / 'lockstep'}",
         os.fspath(source),
         "-o",
         os.fspath(runner),
@@ -422,7 +422,7 @@ def build_fmi3_runner(
         + completed.stderr
     )
     if completed.returncode != 0:
-        raise RuntimeError(f"FMI 3 Zenoh runner build failed\n\n{tail(log_path)}")
+        raise RuntimeError(f"FMI 3 lockstep runner build failed\n\n{tail(log_path)}")
     return runner
 
 

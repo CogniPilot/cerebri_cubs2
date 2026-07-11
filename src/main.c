@@ -7,7 +7,7 @@
 #include <csyn/csyn_zros.h>
 
 #include "FixedWingOuterLoop.h"
-#include "native_sil_transport.h"
+#include "lockstep.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -23,7 +23,26 @@
 LOG_MODULE_REGISTER(cubs2, LOG_LEVEL_INF);
 
 #define CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS 20000000
-#define CUBS2_CONTROL_PERIOD_US (CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS / 1000U)
+#define CUBS2_CONTROL_PERIOD_US               (CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS / 1000U)
+
+/* The application owns its synapse_fbs 0.6 topic contract. CSyn resolves
+ * these compact keys against the generated catalog and rejects mismatched
+ * payload sizes during initialization. */
+CSYN_TOPIC_DEFINE(manual, "manual", CSYN_DIR_RX, sizeof(synapse_topic_ManualControlData_t));
+CSYN_TOPIC_DEFINE(external_pose, "external_pose", CSYN_DIR_RX,
+		  sizeof(synapse_topic_ExternalOdometryData_t));
+CSYN_TOPIC_DEFINE(pwm, "pwm", CSYN_DIR_TX, sizeof(synapse_topic_PwmSignalOutputsData_t));
+CSYN_TOPIC_DEFINE(health, "health", CSYN_DIR_TX, sizeof(synapse_topic_VehicleHealthData_t));
+CSYN_TOPIC_DEFINE(att, "att", CSYN_DIR_TX, sizeof(synapse_topic_AttitudeEstimateData_t));
+CSYN_TOPIC_DEFINE(att_sp, "att_sp", CSYN_DIR_TX, sizeof(synapse_topic_AttitudeCommandData_t));
+CSYN_TOPIC_DEFINE(loop, "loop", CSYN_DIR_TX, sizeof(synapse_topic_ControlLoopMetricsData_t));
+CSYN_ZROS_TOPIC_DEFINE(manual_control, struct csyn_manual_control);
+CSYN_ZROS_TOPIC_DEFINE(external_odometry, synapse_topic_ExternalOdometryData_t);
+CSYN_ZROS_TOPIC_DEFINE(pwm_signal_outputs, synapse_topic_PwmSignalOutputsData_t);
+CSYN_ZROS_TOPIC_DEFINE(vehicle_health, synapse_topic_VehicleHealthData_t);
+CSYN_ZROS_TOPIC_DEFINE(attitude_estimate, synapse_topic_AttitudeEstimateData_t);
+CSYN_ZROS_TOPIC_DEFINE(attitude_command, synapse_topic_AttitudeCommandData_t);
+CSYN_ZROS_TOPIC_DEFINE(control_loop_metrics, synapse_topic_ControlLoopMetricsData_t);
 
 struct control_context {
 	synapse_topic_ExternalOdometryData_t external_odometry;
@@ -51,10 +70,6 @@ static struct zros_pub g_attitude_command_pub;
 static struct zros_pub g_control_loop_metrics_pub;
 static struct zros_sub g_external_odometry_sub;
 static struct zros_sub g_manual_sub;
-#if defined(CONFIG_CUBS2_FASTDYN)
-static struct csyn_topic *g_fastdyn_pwm_outputs_topic;
-static struct csyn_topic *g_fastdyn_attitude_command_topic;
-#endif
 
 static bool read_external_odometry_if_updated(struct control_context *ctx)
 {
@@ -111,8 +126,7 @@ static void fixed_wing_map_input(FixedWingOuterLoopState *model,
 	model->eulerRate_rad_s[2] = odom->angular_velocity_flu_rad_s.yaw;
 }
 
-static void fixed_wing_map_output(const FixedWingOuterLoopState *model,
-				  csyn_rc_channels16_t *rc)
+static void fixed_wing_map_output(const FixedWingOuterLoopState *model, csyn_rc_channels16_t *rc)
 {
 	*rc = (csyn_rc_channels16_t){
 		.ch0 = csyn_pwm_from_centered_axis(-(float)model->aileron),
@@ -177,8 +191,7 @@ static int control_pubs_init(void)
 		{&g_vehicle_health_pub, &topic_vehicle_health, &g_control_ctx.vehicle_health},
 		{&g_attitude_estimate_pub, &topic_attitude_estimate,
 		 &g_control_ctx.attitude_estimate},
-		{&g_attitude_command_pub, &topic_attitude_command,
-		 &g_control_ctx.attitude_command},
+		{&g_attitude_command_pub, &topic_attitude_command, &g_control_ctx.attitude_command},
 		{&g_control_loop_metrics_pub, &topic_control_loop_metrics,
 		 &g_control_ctx.control_loop_metrics},
 	};
@@ -198,22 +211,11 @@ static int control_pubs_init(void)
 	if (rc != 0) {
 		return rc;
 	}
-	rc = zros_sub_init(&g_manual_sub, &g_node, &topic_manual_control,
-			   &g_control_ctx.manual, 0.0);
+	rc = zros_sub_init(&g_manual_sub, &g_node, &topic_manual_control, &g_control_ctx.manual,
+			   0.0);
 	if (rc != 0) {
 		return rc;
 	}
-
-#if defined(CONFIG_CUBS2_FASTDYN)
-	/* Keep the hardware lockstep response on the direct csyn path. The
-	 * general zros bridge deliberately runs at the application's lowest
-	 * priority and can add unbounded host latency under accelerated QEMU. */
-	g_fastdyn_pwm_outputs_topic = csyn_topic_find("pwm_signal_outputs");
-	g_fastdyn_attitude_command_topic = csyn_topic_find("attitude_command");
-	if (g_fastdyn_pwm_outputs_topic == NULL || g_fastdyn_attitude_command_topic == NULL) {
-		return -ENODEV;
-	}
-#endif
 
 	return 0;
 }
@@ -239,8 +241,7 @@ static bool control_step_due(struct control_context *ctx)
 	}
 
 	ctx->next_control_time_us =
-		((ctx->lockstep_time_us / CUBS2_CONTROL_PERIOD_US) + 1U) *
-		CUBS2_CONTROL_PERIOD_US;
+		((ctx->lockstep_time_us / CUBS2_CONTROL_PERIOD_US) + 1U) * CUBS2_CONTROL_PERIOD_US;
 #else
 	ARG_UNUSED(ctx);
 #endif
@@ -261,11 +262,12 @@ static void update_telemetry(struct control_context *ctx, bool auto_mode, uint64
 
 	ctx->attitude_estimate = (synapse_topic_AttitudeEstimateData_t){
 		.timestamp_us = timestamp_us,
-		.angular_velocity_flu_rad_s = {
-			.roll = (float)g_model.eulerRateEstimate_rad_s[0],
-			.pitch = (float)g_model.eulerRateEstimate_rad_s[1],
-			.yaw = (float)g_model.eulerRateEstimate_rad_s[2],
-		},
+		.angular_velocity_flu_rad_s =
+			{
+				.roll = (float)g_model.eulerRateEstimate_rad_s[0],
+				.pitch = (float)g_model.eulerRateEstimate_rad_s[1],
+				.yaw = (float)g_model.eulerRateEstimate_rad_s[2],
+			},
 	};
 	csyn_quatf_from_euler((float)g_model.euler_rad[0], (float)g_model.euler_rad[1],
 			      (float)g_model.euler_rad[2], &ctx->attitude_estimate.attitude);
@@ -296,14 +298,6 @@ static void publish_outputs(struct control_context *ctx, bool auto_mode)
 	csyn_pwm_outputs_from_rc(&ctx->control_rc, &ctx->pwm_outputs, (int64_t)timestamp_us);
 	(void)zros_pub_update(&g_pwm_outputs_pub);
 	update_telemetry(ctx, auto_mode, timestamp_us);
-#if defined(CONFIG_CUBS2_FASTDYN)
-	/* These structs are the generated synapse_fbs wire payloads, so this is
-	 * one bounded lock-free copy per response with no serialization step. */
-	(void)csyn_topic_publish(g_fastdyn_pwm_outputs_topic, &ctx->pwm_outputs,
-				 sizeof(ctx->pwm_outputs));
-	(void)csyn_topic_publish(g_fastdyn_attitude_command_topic, &ctx->attitude_command,
-				 sizeof(ctx->attitude_command));
-#endif
 }
 
 int main(void)
@@ -319,7 +313,7 @@ int main(void)
 	if (rc != 0) {
 		return rc;
 	}
-	rc = cubs2_native_sil_transport_start();
+	rc = cubs2_lockstep_start();
 	if (rc != 0) {
 		return rc;
 	}
@@ -333,9 +327,9 @@ int main(void)
 		bool auto_mode;
 		bool step_control;
 
-#if defined(CONFIG_BOARD_NATIVE_SIM)
-		if (cubs2_native_sil_transport_enabled()) {
-			if (cubs2_native_sil_transport_receive(&ctx->external_odometry) != 0) {
+#if defined(CONFIG_CUBS2_LOCKSTEP)
+		if (cubs2_lockstep_enabled()) {
+			if (cubs2_lockstep_receive(&ctx->external_odometry) != 0) {
 				return -EIO;
 			}
 			ctx->lockstep_time_us = ctx->external_odometry.timestamp_us;
@@ -347,17 +341,6 @@ int main(void)
 			}
 			odometry_updated = read_external_odometry_if_updated(ctx);
 		}
-		if (!odometry_updated) {
-			continue;
-		}
-#elif defined(CONFIG_CUBS2_FASTDYN)
-		/* FastDyn advances the hardware image from external odometry events,
-		 * just like native direct lockstep. A free-running QEMU-time loop can
-		 * otherwise overwhelm the real host transport with stale outputs. */
-		if (zros_sub_wait(&g_external_odometry_sub, K_FOREVER) != 0) {
-			continue;
-		}
-		odometry_updated = read_external_odometry_if_updated(ctx);
 		if (!odometry_updated) {
 			continue;
 		}
@@ -390,19 +373,14 @@ int main(void)
 
 		ctx->main_loop_us = k_cyc_to_us_floor32(k_cycle_get_32() - start_cycles);
 		publish_outputs(ctx, auto_mode);
-#if defined(CONFIG_BOARD_NATIVE_SIM)
-		if (cubs2_native_sil_transport_enabled()) {
-			if (cubs2_native_sil_transport_send(&ctx->pwm_outputs,
-						     &ctx->attitude_command) != 0) {
+#if defined(CONFIG_CUBS2_LOCKSTEP)
+		if (cubs2_lockstep_enabled()) {
+			if (cubs2_lockstep_send(&ctx->pwm_outputs, &ctx->attitude_command) != 0) {
 				return -EIO;
 			}
 		} else {
 			k_yield();
 		}
-#elif defined(CONFIG_CUBS2_FASTDYN)
-		/* Block the control thread briefly so the lower-priority Zenoh worker
-		 * can put the response on the emulated ENET device immediately. */
-		k_sleep(K_MSEC(1));
 #else
 		k_sleep(K_NSEC(CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS));
 #endif

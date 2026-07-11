@@ -26,7 +26,7 @@
       defaultNativeSimBoard = "native_sim";
       defaultNativeSim64Board = "native_sim/native/64";
       rumocaVersion = "0.9.19";
-      synapseFbsVersion = "0.5.0";
+      synapseFbsVersion = "0.6.0";
       mkRumocaPythonPackage =
         pkgs:
         pkgs.python3Packages.buildPythonPackage {
@@ -82,7 +82,7 @@
 
           src = pkgs.fetchurl {
             url = "https://files.pythonhosted.org/packages/source/s/synapse-fbs/synapse_fbs-${synapseFbsVersion}.tar.gz";
-            hash = "sha256-ftpctkqYeoBE+bQTgPA+FWBWXwVbObcRcvJH3SEn9fg=";
+            hash = "sha256-armcV2B+tkQMSZwFbfXb1i0msxt3e3dP2ptERV7QyZM=";
           };
 
           nativeBuildInputs = [

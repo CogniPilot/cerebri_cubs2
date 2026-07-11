@@ -271,7 +271,13 @@ algorithm
     end if;
 
     previousWaypoint := outerLoop.currentWaypoint;
-    landing := pre(landing) or lapCount >= 2;
+    // Finish the second-lap turn before cutting thrust. Starting the approach
+    // at the waypoint transition leaves the aircraft several metres off the
+    // new final leg and removes the energy needed to capture it.
+    landing := pre(landing)
+      or (pre(lapCount) >= 2
+          and abs(outerLoop.crossTrackError) < 2.0
+          and abs(outerLoop.courseAlignmentError) < 0.8);
   end when;
 
 equation

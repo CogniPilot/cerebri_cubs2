@@ -17,7 +17,7 @@
 #include <unistd.h>
 
 #include "fmi3FunctionTypes.h"
-#include "native_sil_transport.h"
+#include "lockstep.h"
 
 #define MAX_FMI_VALUES 128
 #define MAX_NAME_LEN   128
@@ -70,7 +70,7 @@ struct recorded_step {
 };
 
 struct direct_transport {
-	struct cubs2_native_sil_shared *shared;
+	struct cubs2_lockstep_shared *shared;
 	uint32_t sequence;
 	double response_timeout_s;
 };
@@ -460,7 +460,7 @@ static int open_direct_transport(const char *path, struct direct_transport *tran
 	}
 	transport->shared = mapping;
 	transport->sequence = 0;
-	if (transport->shared->magic != CUBS2_NATIVE_SIL_MAGIC) {
+	if (transport->shared->magic != CUBS2_LOCKSTEP_MAGIC) {
 		fprintf(stderr, "native SIL shared memory has invalid magic\n");
 		munmap(mapping, sizeof(*transport->shared));
 		transport->shared = NULL;

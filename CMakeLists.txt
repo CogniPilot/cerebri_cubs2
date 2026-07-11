@@ -26,7 +26,7 @@ find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(cubs2 LANGUAGES C)
 
 if(TARGET native_simulator)
-  target_sources(native_simulator INTERFACE src/native_sil_host.c)
+  target_sources(native_simulator INTERFACE subsys/lockstep/lockstep_host.c)
 endif()
 
 if(CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064 AND CMAKE_C_COMPILER_ID STREQUAL "GNU")
@@ -143,3 +143,4 @@ if(TARGET ..__modules__lib__zenoh-pico__zephyr)
 endif()
 
 add_subdirectory(src)
+add_subdirectory(subsys)
