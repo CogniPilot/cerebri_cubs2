@@ -2,10 +2,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <csyn/csyn.h>
 #include <csyn/csyn_codec.h>
 #include <csyn/csyn_zros.h>
 
 #include "FixedWingOuterLoop.h"
+#include "runtime_control.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -66,19 +68,49 @@ static struct zros_pub g_local_position_command_pub;
 static struct zros_pub g_vehicle_command_pub;
 static struct zros_pub g_navigation_target_pub;
 
+/* Mocap: RawPose subscribed directly on the deployment key; csyn enforces
+ * the RawPoseData value contract before the sample reaches the store.
+ */
+static struct csyn_topic *g_pose_raw_topic;
+
 static bool read_mocap_if_updated(struct control_context *ctx)
 {
-	uint32_t generation = csyn_zros_generation(&topic_mocap);
+	synapse_topic_RawPoseData_t pose;
+	size_t len = 0U;
+	uint32_t generation = csyn_topic_generation(g_pose_raw_topic);
+	bool finite = true;
 
 	if (generation == 0U || generation == ctx->mocap_generation) {
 		return false;
 	}
 
-	if (zros_topic_read(&topic_mocap, &ctx->mocap) != 0) {
+	if (!csyn_topic_copy(g_pose_raw_topic, &pose, sizeof(pose), &len, NULL) ||
+	    len != sizeof(pose)) {
 		return false;
 	}
 
+	const float values[7] = {
+		pose.pose.position_enu_m.x, pose.pose.position_enu_m.y,
+		pose.pose.position_enu_m.z, pose.pose.attitude.w,
+		pose.pose.attitude.x,       pose.pose.attitude.y,
+		pose.pose.attitude.z,
+	};
+
+	for (size_t i = 0U; i < ARRAY_SIZE(values); i++) {
+		finite = finite && isfinite(values[i]);
+	}
+
 	ctx->mocap_generation = generation;
+	ctx->mocap = (struct csyn_mocap_rigid_body){
+		.x = values[0],
+		.y = values[1],
+		.z = values[2],
+		.qw = values[3],
+		.qx = values[4],
+		.qy = values[5],
+		.qz = values[6],
+		.valid = finite,
+	};
 	return true;
 }
 
@@ -398,6 +430,15 @@ int main(void)
 	EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
 	/* Mocap delivers pose only: the estimator derives velocity and rates. */
 	g_model.estimator_useMeasuredRates = 0.0;
+	if (!cubs2_runtime_control_init(&g_model)) {
+		LOG_ERR("failed to register runtime configuration services");
+		return -1;
+	}
+	g_pose_raw_topic = csyn_topic_find("pose_raw");
+	if (g_pose_raw_topic == NULL) {
+		LOG_ERR("pose_raw topic missing");
+		return -1;
+	}
 
 	rc = control_pubs_init();
 	if (rc != 0) {
@@ -423,6 +464,7 @@ int main(void)
 
 		auto_mode = auto_mode_selected(ctx);
 		ctx->previous_auto_mode = auto_mode;
+		cubs2_runtime_control_apply(&g_model, !ctx->manual.valid || ctx->manual.rc.ch6 >= 1500);
 
 		/* The model steps whenever a pose is available, in every mode, so
 		 * the estimator is always warm: engaging auto mid-air is seamless

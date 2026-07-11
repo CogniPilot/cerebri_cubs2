@@ -73,13 +73,14 @@ static bool external_odometry_valid(const synapse_topic_ExternalOdometryData_t *
 				  synapse_topic_ExternalOdometryFlags_AttitudeValid |
 				  synapse_topic_ExternalOdometryFlags_LinearVelocityValid |
 				  synapse_topic_ExternalOdometryFlags_AngularVelocityValid;
-	const uint32_t reject = synapse_topic_ExternalOdometryFlags_OutlierRejected |
+	const uint32_t reject = synapse_topic_ExternalOdometryFlags_Extrapolated |
+				synapse_topic_ExternalOdometryFlags_OutlierRejected |
+				synapse_topic_ExternalOdometryFlags_Degraded |
 				synapse_topic_ExternalOdometryFlags_Lost;
 	uint32_t flags = odom->flags;
 
 	return (flags & required) == required && (flags & reject) == 0U &&
-	       odom->status != synapse_topic_ExternalOdometryStatus_Lost &&
-	       odom->status != synapse_topic_ExternalOdometryStatus_OutlierRejected;
+	       odom->status == synapse_topic_ExternalOdometryStatus_Filtered;
 }
 
 static void fixed_wing_map_input(FixedWingOuterLoopState *model,

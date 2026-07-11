@@ -130,6 +130,9 @@ endif()
 
 target_sources(app PRIVATE
   ${CUBS2_EFMI_CONTROL_SOURCES}
+  ${synapse_fbs_c_SOURCE_DIR}/src/flatcc-runtime/builder.c
+  ${synapse_fbs_c_SOURCE_DIR}/src/flatcc-runtime/emitter.c
+  ${synapse_fbs_c_SOURCE_DIR}/src/flatcc-runtime/refmap.c
 )
 
 target_include_directories(app PRIVATE

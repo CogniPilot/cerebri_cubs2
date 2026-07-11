@@ -35,6 +35,7 @@ from synapse.topic.PwmSignalOutputsData import PwmSignalOutputsData
 from synapse.types.Quaternionf import Quaternionf
 from synapse.types.RateTriplet import RateTriplet
 from synapse.types.Vec3f import Vec3f
+from synapse import topic_catalog
 import zenoh
 
 matplotlib.use("Agg")
@@ -44,11 +45,20 @@ import matplotlib.pyplot as plt
 ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_ROOT = Path(os.environ.get("CUBS2_WORKSPACE_ROOT", ROOT.parent)).resolve()
 
-SYNAPSE_EXTERNAL_ODOMETRY_TOPIC = "synapse/v1/topic/external_odometry"
-SYNAPSE_PWM_TOPIC = "synapse/v1/topic/pwm_signal_outputs"
-SYNAPSE_ATTITUDE_COMMAND_TOPIC = "synapse/v1/topic/attitude_command"
+SYNAPSE_EXTERNAL_ODOMETRY_TOPIC = "external_pose"
+SYNAPSE_PWM_TOPIC = "pwm"
+SYNAPSE_ATTITUDE_COMMAND_TOPIC = "att_sp"
 RUMOCA_EXTERNAL_ODOMETRY_TOPIC = "cubs2/sil/external_odometry"
 RUMOCA_PWM_TOPIC = "cubs2/sil/pwm_signal_outputs"
+
+
+def catalog_encoding(topic_name):
+    """Mandatory synapse_fbs value contract for a catalog topic (0.6.0+)."""
+    topic = topic_catalog.topic_by_name(topic_name)
+    media = (
+        "application/x-synapse-struct" if topic.fixed_layout else "application/x-flatbuffers"
+    )
+    return f"{media};type={topic.wire_type};schema=sha256-128:{topic.schema_hash}"
 
 DEFAULT_SCENARIO = ROOT / "tests" / "zephyr" / "rumoca-scenario.native-sim.toml"
 DEFAULT_T_END = 40.0
@@ -653,6 +663,7 @@ def bridge_topics(locator: str, stop: threading.Event, logs: BridgeLog, startup_
                 session.put(
                     SYNAPSE_EXTERNAL_ODOMETRY_TOPIC,
                     fixed_struct_payload(odometry, ExternalOdometryData.SizeOf()),
+                    encoding=catalog_encoding("ExternalOdometry"),
                 )
                 odometry_forwarded = True
                 logs.odometry_rows.append(odometry_row)

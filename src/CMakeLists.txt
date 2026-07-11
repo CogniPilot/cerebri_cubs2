@@ -1,7 +1,9 @@
 target_include_directories(app PRIVATE ${CMAKE_CURRENT_LIST_DIR})
 
+target_sources(app PRIVATE csyn_topics.c zros_topics.c)
+
 if(CONFIG_CUBS2_REALTIME)
-  target_sources(app PRIVATE main_realtime.c)
+  target_sources(app PRIVATE main_realtime.c runtime_control.c)
 else()
   target_sources(app PRIVATE
     main_sil.c

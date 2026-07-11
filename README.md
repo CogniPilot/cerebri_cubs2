@@ -7,11 +7,11 @@ piloted aircraft.
 
 The board is an Ethernet/Zenoh control node:
 
-- subscribe to `synapse/v1/topic/manual_control_command`
-- subscribe to `synapse/v1/topic/external_odometry`
+- subscribe to `manual`
+- subscribe to `external_pose`
 - mirror inbound payloads from csyn into zros
 - run the Rumoca-generated fixed-wing eFMI controller from zros state
-- publish `synapse/v1/topic/pwm_signal_outputs`
+- publish `pwm`
 - publish `vehicle_health`, `attitude_estimate`, `attitude_command`, and
   `control_loop_metrics` synapse topics for controller diagnostics
 
