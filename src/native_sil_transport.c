@@ -10,14 +10,14 @@
 #include <nsi_main.h>
 
 #include <errno.h>
-#include <zephyr/kernel.h>
+
+#include <cerebri_lockstep/sequence.h>
 
 void *cubs2_native_sil_host_map(const char *path, unsigned long size);
 void cubs2_native_sil_host_unmap(void *mapping, unsigned long size);
 
 static struct cubs2_native_sil_shared *g_native_sil_shared;
-static uint32_t g_native_sil_sequence;
-static bool g_native_sil_cooperative;
+static struct cerebri_lockstep_sequence g_native_sil_lockstep;
 
 int cubs2_native_sil_transport_start(void)
 {
@@ -35,8 +35,10 @@ int cubs2_native_sil_transport_start(void)
 		g_native_sil_shared = NULL;
 		return -EIO;
 	}
-	g_native_sil_cooperative = nsi_host_getenv("CUBS2_NATIVE_SIL_COOPERATIVE") != NULL;
-	return 0;
+	return cerebri_lockstep_sequence_init(
+		&g_native_sil_lockstep, &g_native_sil_shared->odometry_sequence,
+		&g_native_sil_shared->response_sequence, &g_native_sil_shared->terminate,
+		nsi_host_getenv("CUBS2_NATIVE_SIL_COOPERATIVE") != NULL);
 }
 
 bool cubs2_native_sil_transport_enabled(void)
@@ -46,20 +48,15 @@ bool cubs2_native_sil_transport_enabled(void)
 
 int cubs2_native_sil_transport_receive(synapse_topic_ExternalOdometryData_t *odometry)
 {
-	uint32_t sequence;
+	int rc = cerebri_lockstep_sequence_wait(&g_native_sil_lockstep);
 
-	do {
-		sequence =
-			__atomic_load_n(&g_native_sil_shared->odometry_sequence, __ATOMIC_ACQUIRE);
-		if (sequence == g_native_sil_sequence && g_native_sil_cooperative) {
-			k_sleep(K_USEC(100));
-		}
-	} while (sequence == g_native_sil_sequence);
-	if (__atomic_load_n(&g_native_sil_shared->terminate, __ATOMIC_ACQUIRE) != 0U) {
+	if (rc == -ECANCELED) {
 		nsi_exit(0);
 	}
+	if (rc != 0) {
+		return rc;
+	}
 	*odometry = g_native_sil_shared->odometry;
-	g_native_sil_sequence = sequence;
 	return 0;
 }
 
@@ -68,8 +65,7 @@ int cubs2_native_sil_transport_send(const synapse_topic_PwmSignalOutputsData_t *
 {
 	g_native_sil_shared->pwm = *pwm;
 	g_native_sil_shared->attitude = *attitude;
-	__atomic_store_n(&g_native_sil_shared->response_sequence, g_native_sil_sequence,
-			 __ATOMIC_RELEASE);
+	cerebri_lockstep_sequence_respond(&g_native_sil_lockstep);
 	return 0;
 }
 

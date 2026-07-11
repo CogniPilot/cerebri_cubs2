@@ -2,6 +2,19 @@ source "Kconfig.zephyr"
 
 menu "CUBS2"
 
+config CUBS2_NATIVE_SIL_LOCKSTEP
+	bool
+	default y if BOARD_NATIVE_SIM
+	select CEREBRI_LOCKSTEP
+
+config CUBS2_FASTDYN
+	bool "Enable FastDyn hardware-target adapters"
+	default n
+	help
+	  Retain the mr_vmu_tropic Cortex-M7 image, linker layout, Zephyr kernel,
+	  Ethernet driver, and CUBS2 application while bypassing physical-only
+	  board sequencing and analog clock setup during FastDyn/QEMU rehosting.
+
 config CUBS2_MANUAL_OVERRIDE
 	bool "Select manual or autonomous RC output from incoming RC switch"
 	default y

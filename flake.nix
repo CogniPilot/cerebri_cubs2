@@ -326,6 +326,7 @@
                 modules/hal/cmsis_6 \
                 modules/hal/nxp \
                 modules/lib/zenoh-pico \
+                modules/lib/cerebri_lockstep \
                 modules/lib/zros \
                 modules/lib/csyn \
                 modules/lib/zephyr_boards \

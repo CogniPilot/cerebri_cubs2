@@ -2,6 +2,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <csyn/csyn.h>
 #include <csyn/csyn_codec.h>
 #include <csyn/csyn_zros.h>
 
@@ -50,6 +51,10 @@ static struct zros_pub g_attitude_command_pub;
 static struct zros_pub g_control_loop_metrics_pub;
 static struct zros_sub g_external_odometry_sub;
 static struct zros_sub g_manual_sub;
+#if defined(CONFIG_CUBS2_FASTDYN)
+static struct csyn_topic *g_fastdyn_pwm_outputs_topic;
+static struct csyn_topic *g_fastdyn_attitude_command_topic;
+#endif
 
 static bool read_external_odometry_if_updated(struct control_context *ctx)
 {
@@ -199,12 +204,23 @@ static int control_pubs_init(void)
 		return rc;
 	}
 
+#if defined(CONFIG_CUBS2_FASTDYN)
+	/* Keep the hardware lockstep response on the direct csyn path. The
+	 * general zros bridge deliberately runs at the application's lowest
+	 * priority and can add unbounded host latency under accelerated QEMU. */
+	g_fastdyn_pwm_outputs_topic = csyn_topic_find("pwm_signal_outputs");
+	g_fastdyn_attitude_command_topic = csyn_topic_find("attitude_command");
+	if (g_fastdyn_pwm_outputs_topic == NULL || g_fastdyn_attitude_command_topic == NULL) {
+		return -ENODEV;
+	}
+#endif
+
 	return 0;
 }
 
 static uint64_t control_timestamp_us(const struct control_context *ctx)
 {
-#if defined(CONFIG_BOARD_NATIVE_SIM)
+#if defined(CONFIG_BOARD_NATIVE_SIM) || defined(CONFIG_CUBS2_FASTDYN)
 	if (ctx->lockstep_time_valid) {
 		return ctx->lockstep_time_us;
 	}
@@ -217,7 +233,7 @@ static uint64_t control_timestamp_us(const struct control_context *ctx)
 
 static bool control_step_due(struct control_context *ctx)
 {
-#if defined(CONFIG_BOARD_NATIVE_SIM)
+#if defined(CONFIG_BOARD_NATIVE_SIM) || defined(CONFIG_CUBS2_FASTDYN)
 	if (ctx->lockstep_time_us < ctx->next_control_time_us) {
 		return false;
 	}
@@ -280,6 +296,14 @@ static void publish_outputs(struct control_context *ctx, bool auto_mode)
 	csyn_pwm_outputs_from_rc(&ctx->control_rc, &ctx->pwm_outputs, (int64_t)timestamp_us);
 	(void)zros_pub_update(&g_pwm_outputs_pub);
 	update_telemetry(ctx, auto_mode, timestamp_us);
+#if defined(CONFIG_CUBS2_FASTDYN)
+	/* These structs are the generated synapse_fbs wire payloads, so this is
+	 * one bounded lock-free copy per response with no serialization step. */
+	(void)csyn_topic_publish(g_fastdyn_pwm_outputs_topic, &ctx->pwm_outputs,
+				 sizeof(ctx->pwm_outputs));
+	(void)csyn_topic_publish(g_fastdyn_attitude_command_topic, &ctx->attitude_command,
+				 sizeof(ctx->attitude_command));
+#endif
 }
 
 int main(void)
@@ -326,6 +350,17 @@ int main(void)
 		if (!odometry_updated) {
 			continue;
 		}
+#elif defined(CONFIG_CUBS2_FASTDYN)
+		/* FastDyn advances the hardware image from external odometry events,
+		 * just like native direct lockstep. A free-running QEMU-time loop can
+		 * otherwise overwhelm the real host transport with stale outputs. */
+		if (zros_sub_wait(&g_external_odometry_sub, K_FOREVER) != 0) {
+			continue;
+		}
+		odometry_updated = read_external_odometry_if_updated(ctx);
+		if (!odometry_updated) {
+			continue;
+		}
 #else
 		odometry_updated = read_external_odometry_if_updated(ctx);
 #endif
@@ -364,6 +399,10 @@ int main(void)
 		} else {
 			k_yield();
 		}
+#elif defined(CONFIG_CUBS2_FASTDYN)
+		/* Block the control thread briefly so the lower-priority Zenoh worker
+		 * can put the response on the emulated ENET device immediately. */
+		k_sleep(K_MSEC(1));
 #else
 		k_sleep(K_NSEC(CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS));
 #endif

@@ -74,6 +74,19 @@ scenario settings. Python only normalizes traces for checks and plots. CI runs
 the flight SIL test through `nix run .#flight-sil-test` and uploads the
 generated CSV, PNG, Markdown, and HTML report artifacts.
 
+The pattern defaults to four waypoints. Its active length and coordinates are
+tunable simulation parameters backed by a fixed four-waypoint capacity, so a new
+flight plan does not recompile the model. Repeat `--waypoint x,y,z` once per
+active waypoint:
+
+```sh
+nix run .#flight-sil-test -- \
+  --waypoint 0,0,3 \
+  --waypoint 30,0,3 \
+  --waypoint 30,20,3 \
+  --waypoint 0,20,3
+```
+
 Use separate build directories when switching boards:
 
 ```sh
