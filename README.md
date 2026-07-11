@@ -82,6 +82,29 @@ west build -b native_sim -d build-native_sim cerebri_cubs2
 west build -b native_sim/native/64 -d build-native_sim_native_64 cerebri_cubs2
 ```
 
+## Realtime and SIL native_sim builds
+
+`native_sim` has two build flavors selected by `CONFIG_CUBS2_REALTIME`
+(default `y`):
+
+- **Realtime** (`build-native_sim`, the default config above): the flying
+  ground-side autopilot. The control loop paces itself on the wall clock,
+  subscribes to the Zenoh mocap pose key directly, and publishes mission
+  telemetry over the csyn bridge.
+- **Lockstep SIL** (`build-native_sim_sil`): the regression/simulation build.
+  It consumes external odometry (Zenoh bridge or the shared-memory lockstep
+  transport) and steps on simulation time:
+
+```sh
+west build -b native_sim -d build-native_sim_sil cerebri_cubs2 -- \
+  -DEXTRA_CONF_FILE=$PWD/cerebri_cubs2/boards/native_sim_sil.conf
+```
+
+`nix run .#build-native-sim` and `.#build-native-sim-64` produce the SIL
+flavor (into `build-native_sim_sil` and `build-native_sim_native_64_sil`),
+which is what CI tests and releases ship. Keep the two build directories
+separate so the flying binary can never inherit a SIL configuration.
+
 ## Nix Environment
 
 Nix support is optional and lives in the root `flake.nix` so it is easy to
@@ -132,7 +155,7 @@ reuse an existing native-sim executable:
 
 ```sh
 nix run .#native-sim-sil-run -- \
-  --sim build-native_sim/zephyr/zephyr.exe \
+  --sim build-native_sim_sil/zephyr/zephyr.exe \
   --artifacts artifacts/native-sim-lockstep \
   --lockstep-regression-only
 ```
