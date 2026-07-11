@@ -25,27 +25,26 @@ LOG_MODULE_REGISTER(cubs2, LOG_LEVEL_INF);
 #define CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS 20000000
 #define CUBS2_CONTROL_PERIOD_US               (CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS / 1000U)
 
-/* The application owns its synapse_fbs 0.6 topic contract. CSyn resolves
+/* The application owns its synapse_fbs 0.7 topic contract. CSyn resolves
  * these compact keys against the generated catalog and rejects mismatched
  * payload sizes during initialization. */
 CSYN_TOPIC_DEFINE(manual, "manual", CSYN_DIR_RX, sizeof(synapse_topic_ManualControlData_t));
-CSYN_TOPIC_DEFINE(external_pose, "external_pose", CSYN_DIR_RX,
-		  sizeof(synapse_topic_ExternalOdometryData_t));
+CSYN_TOPIC_DEFINE(odom, "odom", CSYN_DIR_RX, sizeof(synapse_topic_OdometryData_t));
 CSYN_TOPIC_DEFINE(pwm, "pwm", CSYN_DIR_TX, sizeof(synapse_topic_PwmSignalOutputsData_t));
 CSYN_TOPIC_DEFINE(health, "health", CSYN_DIR_TX, sizeof(synapse_topic_VehicleHealthData_t));
 CSYN_TOPIC_DEFINE(att, "att", CSYN_DIR_TX, sizeof(synapse_topic_AttitudeEstimateData_t));
 CSYN_TOPIC_DEFINE(att_sp, "att_sp", CSYN_DIR_TX, sizeof(synapse_topic_AttitudeCommandData_t));
 CSYN_TOPIC_DEFINE(loop, "loop", CSYN_DIR_TX, sizeof(synapse_topic_ControlLoopMetricsData_t));
-CSYN_ZROS_TOPIC_DEFINE(manual_control, struct csyn_manual_control);
-CSYN_ZROS_TOPIC_DEFINE(external_odometry, synapse_topic_ExternalOdometryData_t);
-CSYN_ZROS_TOPIC_DEFINE(pwm_signal_outputs, synapse_topic_PwmSignalOutputsData_t);
-CSYN_ZROS_TOPIC_DEFINE(vehicle_health, synapse_topic_VehicleHealthData_t);
-CSYN_ZROS_TOPIC_DEFINE(attitude_estimate, synapse_topic_AttitudeEstimateData_t);
-CSYN_ZROS_TOPIC_DEFINE(attitude_command, synapse_topic_AttitudeCommandData_t);
-CSYN_ZROS_TOPIC_DEFINE(control_loop_metrics, synapse_topic_ControlLoopMetricsData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(manual_control, struct csyn_manual_control);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(odometry, synapse_topic_OdometryData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(pwm_signal_outputs, synapse_topic_PwmSignalOutputsData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(vehicle_health, synapse_topic_VehicleHealthData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(attitude_estimate, synapse_topic_AttitudeEstimateData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(attitude_command, synapse_topic_AttitudeCommandData_t);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(control_loop_metrics, synapse_topic_ControlLoopMetricsData_t);
 
 struct control_context {
-	synapse_topic_ExternalOdometryData_t external_odometry;
+	synapse_topic_OdometryData_t odometry;
 	struct csyn_manual_control manual;
 	csyn_rc_channels16_t control_rc;
 	synapse_topic_PwmSignalOutputsData_t pwm_outputs;
@@ -68,16 +67,16 @@ static struct zros_pub g_vehicle_health_pub;
 static struct zros_pub g_attitude_estimate_pub;
 static struct zros_pub g_attitude_command_pub;
 static struct zros_pub g_control_loop_metrics_pub;
-static struct zros_sub g_external_odometry_sub;
+static struct zros_sub g_odometry_sub;
 static struct zros_sub g_manual_sub;
 
-static bool read_external_odometry_if_updated(struct control_context *ctx)
+static bool read_odometry_if_updated(struct control_context *ctx)
 {
-	if (zros_sub_update(&g_external_odometry_sub) != 0) {
+	if (zros_sub_update(&g_odometry_sub) != 0) {
 		return false;
 	}
 
-	ctx->lockstep_time_us = ctx->external_odometry.timestamp_us;
+	ctx->lockstep_time_us = ctx->odometry.timestamp_us;
 	ctx->lockstep_time_valid = true;
 	return true;
 }
@@ -87,43 +86,43 @@ static bool read_manual_if_updated(struct control_context *ctx)
 	return zros_sub_update(&g_manual_sub) == 0;
 }
 
-static bool external_odometry_valid(const synapse_topic_ExternalOdometryData_t *odom)
+static bool odometry_valid(const synapse_topic_OdometryData_t *odom)
 {
-	const uint32_t required = synapse_topic_ExternalOdometryFlags_PositionValid |
-				  synapse_topic_ExternalOdometryFlags_AttitudeValid |
-				  synapse_topic_ExternalOdometryFlags_LinearVelocityValid |
-				  synapse_topic_ExternalOdometryFlags_AngularVelocityValid;
-	const uint32_t reject = synapse_topic_ExternalOdometryFlags_OutlierRejected |
-				synapse_topic_ExternalOdometryFlags_Lost;
+	const uint32_t required = synapse_topic_OdometryFlags_PositionValid |
+				  synapse_topic_OdometryFlags_AttitudeValid |
+				  synapse_topic_OdometryFlags_LinearVelocityValid |
+				  synapse_topic_OdometryFlags_AngularVelocityValid;
+	const uint32_t reject = synapse_topic_OdometryFlags_OutlierRejected |
+				synapse_topic_OdometryFlags_Lost;
 	uint32_t flags = odom->flags;
 
 	return (flags & required) == required && (flags & reject) == 0U &&
-	       odom->status != synapse_topic_ExternalOdometryStatus_Lost &&
-	       odom->status != synapse_topic_ExternalOdometryStatus_OutlierRejected;
+	       odom->status != synapse_topic_OdometryStatus_Lost &&
+	       odom->status != synapse_topic_OdometryStatus_OutlierRejected;
 }
 
 static void fixed_wing_map_input(FixedWingOuterLoopState *model,
-				 const synapse_topic_ExternalOdometryData_t *odom)
+				 const synapse_topic_OdometryData_t *odom)
 {
 	float roll = 0.0f;
 	float pitch = 0.0f;
 	float yaw = 0.0f;
 
 	/* FixedWingOuterLoop consumes Euler [roll, pitch, yaw] in radians. */
-	csyn_euler_from_quatf(&odom->attitude, &roll, &pitch, &yaw);
+	csyn_euler_from_quatf(&odom->pose.attitude, &roll, &pitch, &yaw);
 
-	model->position_m[0] = odom->position_enu_m.x;
-	model->position_m[1] = odom->position_enu_m.y;
-	model->position_m[2] = odom->position_enu_m.z;
+	model->position_m[0] = odom->pose.position_enu_m.x;
+	model->position_m[1] = odom->pose.position_enu_m.y;
+	model->position_m[2] = odom->pose.position_enu_m.z;
 	model->euler_rad[0] = roll;
 	model->euler_rad[1] = pitch;
 	model->euler_rad[2] = yaw;
-	model->velocity_m_s[0] = odom->linear_velocity_enu_m_s.x;
-	model->velocity_m_s[1] = odom->linear_velocity_enu_m_s.y;
-	model->velocity_m_s[2] = odom->linear_velocity_enu_m_s.z;
-	model->eulerRate_rad_s[0] = odom->angular_velocity_flu_rad_s.roll;
-	model->eulerRate_rad_s[1] = odom->angular_velocity_flu_rad_s.pitch;
-	model->eulerRate_rad_s[2] = odom->angular_velocity_flu_rad_s.yaw;
+	model->velocity_m_s[0] = odom->twist.linear_velocity_enu_m_s.x;
+	model->velocity_m_s[1] = odom->twist.linear_velocity_enu_m_s.y;
+	model->velocity_m_s[2] = odom->twist.linear_velocity_enu_m_s.z;
+	model->eulerRate_rad_s[0] = odom->twist.angular_velocity_flu_rad_s.roll;
+	model->eulerRate_rad_s[1] = odom->twist.angular_velocity_flu_rad_s.pitch;
+	model->eulerRate_rad_s[2] = odom->twist.angular_velocity_flu_rad_s.yaw;
 }
 
 static void fixed_wing_map_output(const FixedWingOuterLoopState *model, csyn_rc_channels16_t *rc)
@@ -206,8 +205,8 @@ static int control_pubs_init(void)
 		}
 	}
 
-	rc = zros_sub_init(&g_external_odometry_sub, &g_node, &topic_external_odometry,
-			   &g_control_ctx.external_odometry, 0.0);
+	rc = zros_sub_init(&g_odometry_sub, &g_node, &topic_odometry,
+			   &g_control_ctx.odometry, 0.0);
 	if (rc != 0) {
 		return rc;
 	}
@@ -219,7 +218,6 @@ static int control_pubs_init(void)
 
 	return 0;
 }
-
 static uint64_t control_timestamp_us(const struct control_context *ctx)
 {
 #if defined(CONFIG_BOARD_NATIVE_SIM) || defined(CONFIG_CUBS2_FASTDYN)
@@ -329,23 +327,23 @@ int main(void)
 
 #if defined(CONFIG_CUBS2_LOCKSTEP)
 		if (cubs2_lockstep_enabled()) {
-			if (cubs2_lockstep_receive(&ctx->external_odometry) != 0) {
+			if (cubs2_lockstep_receive(&ctx->odometry) != 0) {
 				return -EIO;
 			}
-			ctx->lockstep_time_us = ctx->external_odometry.timestamp_us;
+			ctx->lockstep_time_us = ctx->odometry.timestamp_us;
 			ctx->lockstep_time_valid = true;
 			odometry_updated = true;
 		} else {
-			if (zros_sub_wait(&g_external_odometry_sub, K_FOREVER) != 0) {
+			if (zros_sub_wait(&g_odometry_sub, K_FOREVER) != 0) {
 				continue;
 			}
-			odometry_updated = read_external_odometry_if_updated(ctx);
+			odometry_updated = read_odometry_if_updated(ctx);
 		}
 		if (!odometry_updated) {
 			continue;
 		}
 #else
-		odometry_updated = read_external_odometry_if_updated(ctx);
+		odometry_updated = read_odometry_if_updated(ctx);
 #endif
 		(void)read_manual_if_updated(ctx);
 
@@ -358,12 +356,12 @@ int main(void)
 		step_control = control_step_due(ctx);
 
 		if (auto_mode) {
-			if (step_control && external_odometry_valid(&ctx->external_odometry)) {
-				fixed_wing_map_input(&g_model, &ctx->external_odometry);
+			if (step_control && odometry_valid(&ctx->odometry)) {
+				fixed_wing_map_input(&g_model, &ctx->odometry);
 				EFMI_STEP(FixedWingOuterLoop, &g_model);
 				fixed_wing_map_output(&g_model, &auto_rc);
 				ctx->control_rc = auto_rc;
-			} else if (!external_odometry_valid(&ctx->external_odometry)) {
+			} else if (!odometry_valid(&ctx->odometry)) {
 				idle_output(&auto_rc);
 				ctx->control_rc = auto_rc;
 			}

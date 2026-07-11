@@ -58,7 +58,7 @@ struct output_files {
 struct recorded_step {
 	double time;
 	double trace[MAX_FMI_VALUES];
-	synapse_topic_ExternalOdometryData_t odometry;
+	synapse_topic_OdometryData_t odometry;
 	synapse_topic_PwmSignalOutputsData_t pwm;
 	synapse_topic_AttitudeCommandData_t attitude;
 	double odometry_wall;
@@ -284,7 +284,6 @@ static int close_outputs(struct output_files *outputs)
 	}
 	return result;
 }
-
 static int open_outputs(char **argv, struct output_files *outputs)
 {
 	FILE **files[] = {&outputs->plant, &outputs->odometry, &outputs->pwm, &outputs->attitude,
@@ -363,7 +362,7 @@ static int capture_plant_row(const struct fmi_api *api, fmi3Instance instance,
 
 static int make_odometry(const struct fmi_api *api, fmi3Instance instance,
 			 const struct runner_config *config,
-			 synapse_topic_ExternalOdometryData_t *odometry)
+			 synapse_topic_OdometryData_t *odometry)
 {
 	double value[ODOMETRY_COUNT];
 
@@ -372,37 +371,49 @@ static int make_odometry(const struct fmi_api *api, fmi3Instance instance,
 	}
 	memset(odometry, 0, sizeof(*odometry));
 	odometry->timestamp_us = (uint64_t)llround(value[0]);
-	odometry->position_enu_m =
+	odometry->pose.position_enu_m =
 		(synapse_types_Vec3f_t){(float)value[1], (float)value[2], (float)value[3]};
-	odometry->attitude = (synapse_types_Quaternionf_t){(float)value[4], (float)value[5],
-							   (float)value[6], (float)value[7]};
-	odometry->linear_velocity_enu_m_s =
+	odometry->pose.attitude =
+		(synapse_types_Quaternionf_t){(float)value[4], (float)value[5],
+						    (float)value[6], (float)value[7]};
+	odometry->twist.linear_velocity_enu_m_s =
 		(synapse_types_Vec3f_t){(float)value[8], (float)value[9], (float)value[10]};
-	odometry->angular_velocity_flu_rad_s =
+	odometry->twist.angular_velocity_flu_rad_s =
 		(synapse_types_RateTriplet_t){(float)value[11], (float)value[12], (float)value[13]};
 	odometry->flags = (uint8_t)llround(value[14]);
 	odometry->status = (uint8_t)llround(value[15]);
-	odometry->source_id = (uint8_t)llround(value[16]);
-	odometry->id = (uint8_t)llround(value[17]);
+	odometry->estimator_type = (uint8_t)llround(value[16]);
+	odometry->reset_counter = (uint8_t)llround(value[17]);
+	odometry->quality_pct = 100;
 	return 0;
 }
 
-static void write_odometry_row(FILE *file, const synapse_topic_ExternalOdometryData_t *value,
+static void write_odometry_row(FILE *file, const synapse_topic_OdometryData_t *value,
 			       double wall, uint64_t sequence)
 {
-	const bool valid = (value->flags & UINT8_C(15)) == UINT8_C(15) &&
-			   (value->flags & UINT8_C(64)) == 0 && value->status != UINT8_C(3);
+	const uint8_t required = synapse_topic_OdometryFlags_PositionValid |
+				 synapse_topic_OdometryFlags_AttitudeValid |
+				 synapse_topic_OdometryFlags_LinearVelocityValid |
+				 synapse_topic_OdometryFlags_AngularVelocityValid;
+	const uint8_t reject = synapse_topic_OdometryFlags_OutlierRejected |
+			       synapse_topic_OdometryFlags_Lost;
+	const bool valid = (value->flags & required) == required &&
+			   (value->flags & reject) == 0 &&
+			   value->status != synapse_topic_OdometryStatus_Lost;
 
 	fprintf(file,
 		"%.9f,%llu,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,%.9g,"
 		"%.9g,%.9g,%.9g,%u,%u,%u,%u,%d,%.9f,%llu\n",
 		(double)value->timestamp_us / 1.0e6, (unsigned long long)value->timestamp_us,
-		value->position_enu_m.x, value->position_enu_m.y, value->position_enu_m.z,
-		value->attitude.w, value->attitude.x, value->attitude.y, value->attitude.z,
-		value->linear_velocity_enu_m_s.x, value->linear_velocity_enu_m_s.y,
-		value->linear_velocity_enu_m_s.z, value->angular_velocity_flu_rad_s.roll,
-		value->angular_velocity_flu_rad_s.pitch, value->angular_velocity_flu_rad_s.yaw,
-		value->flags, value->status, value->source_id, value->id, valid ? 1 : 0, wall,
+		value->pose.position_enu_m.x, value->pose.position_enu_m.y,
+		value->pose.position_enu_m.z, value->pose.attitude.w, value->pose.attitude.x,
+		value->pose.attitude.y, value->pose.attitude.z,
+		value->twist.linear_velocity_enu_m_s.x, value->twist.linear_velocity_enu_m_s.y,
+		value->twist.linear_velocity_enu_m_s.z,
+		value->twist.angular_velocity_flu_rad_s.roll,
+		value->twist.angular_velocity_flu_rad_s.pitch,
+		value->twist.angular_velocity_flu_rad_s.yaw, value->flags, value->status,
+		value->estimator_type, value->reset_counter, valid ? 1 : 0, wall,
 		(unsigned long long)sequence);
 }
 
@@ -514,7 +525,7 @@ static uint16_t pwm_output_at(const synapse_topic_PwmSignalOutputsData_t *value,
 }
 
 static int exchange_direct(struct direct_transport *transport,
-			   const synapse_topic_ExternalOdometryData_t *odometry,
+			   const synapse_topic_OdometryData_t *odometry,
 			   synapse_topic_PwmSignalOutputsData_t *pwm,
 			   synapse_topic_AttitudeCommandData_t *attitude)
 {

@@ -60,13 +60,12 @@ int cubs2_lockstep_start(void)
 	return 0;
 #endif
 }
-
 bool cubs2_lockstep_enabled(void)
 {
 	return g_shared != NULL;
 }
 
-int cubs2_lockstep_receive(synapse_topic_ExternalOdometryData_t *odometry)
+int cubs2_lockstep_receive(synapse_topic_OdometryData_t *odometry)
 {
 #if defined(CONFIG_CUBS2_LOCKSTEP)
 	int rc = cerebri_lockstep_sequence_wait(&g_lockstep);
