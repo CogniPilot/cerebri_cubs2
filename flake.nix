@@ -464,11 +464,12 @@
 
             board="''${CUBS2_NATIVE_SIM_BOARD:-${defaultNativeSimBoard}}"
             board_slug="''${board//\//_}"
-            build_dir="''${CUBS2_NATIVE_SIM_BUILD_DIR:-$app/build-$board_slug}"
+            build_dir="''${CUBS2_NATIVE_SIM_BUILD_DIR:-$app/build-''${board_slug}_sil}"
 
             cd "$workspace"
             zephyr_app_run_logged "$build_dir/west-build.log" \
-              west build -b "$board" -d "$build_dir" "$app" "$@"
+              west build -b "$board" -d "$build_dir" "$app" "$@" -- \
+              -DEXTRA_CONF_FILE="$app/boards/native_sim_sil.conf"
           '';
 
           cubs2-build-native-sim-64 = mkWestApp "cubs2-build-native-sim-64" [ ] ''
@@ -483,11 +484,12 @@
 
             board="''${CUBS2_NATIVE_SIM_64_BOARD:-${defaultNativeSim64Board}}"
             board_slug="''${board//\//_}"
-            build_dir="''${CUBS2_NATIVE_SIM_64_BUILD_DIR:-$app/build-$board_slug}"
+            build_dir="''${CUBS2_NATIVE_SIM_64_BUILD_DIR:-$app/build-''${board_slug}_sil}"
 
             cd "$workspace"
             zephyr_app_run_logged "$build_dir/west-build.log" \
-              west build -b "$board" -d "$build_dir" "$app" "$@"
+              west build -b "$board" -d "$build_dir" "$app" "$@" -- \
+              -DEXTRA_CONF_FILE="$app/boards/native_sim_sil.conf"
           '';
 
           cubs2-flash = mkWestApp "cubs2-flash" [ ] ''
@@ -631,7 +633,7 @@
               "${cubs2-build-native-sim}/bin/cubs2-build-native-sim"
               board="''${CUBS2_NATIVE_SIM_BOARD:-${defaultNativeSimBoard}}"
               board_slug="''${board//\//_}"
-              sim="''${CUBS2_NATIVE_SIM_BUILD_DIR:-$app/build-$board_slug}/zephyr/zephyr.exe"
+              sim="''${CUBS2_NATIVE_SIM_BUILD_DIR:-$app/build-''${board_slug}_sil}/zephyr/zephyr.exe"
 
               cd "$app"
               exec "${cubs2-native-sim-sil-run}/bin/cubs2-native-sim-sil-run" \
@@ -712,7 +714,7 @@
               app="$(zephyr_app_find_app)"
               board="''${CUBS2_NATIVE_SIM_64_BOARD:-${defaultNativeSim64Board}}"
               board_slug="''${board//\//_}"
-              sim="''${CUBS2_NATIVE_SIM_64_BUILD_DIR:-$app/build-$board_slug}/zephyr/zephyr.exe"
+              sim="''${CUBS2_NATIVE_SIM_64_BUILD_DIR:-$app/build-''${board_slug}_sil}/zephyr/zephyr.exe"
               artifacts="''${CUBS2_NATIVE_SIM_64_ARTIFACTS:-artifacts/native-sim-64-sil}"
 
               cd "$app"
