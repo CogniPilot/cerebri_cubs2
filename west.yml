@@ -35,7 +35,7 @@ manifest:
       path: modules/lib/zros
     - name: csyn
       remote: cognipilot
-      revision: 05aabf19bf4b2182a98f609f51da22e706d47f70 # flight-zenoh-mocap: configurable mocap source, synapse_fbs 0.5.1 (local; push before CI)
+      revision: cd84016d106fdf6f898e8acbb22c5def48b20600 # flight-zenoh-mocap: configurable mocap source, synapse_fbs 0.5.1
       path: modules/lib/csyn
     - name: modelica_models
       remote: cognipilot
