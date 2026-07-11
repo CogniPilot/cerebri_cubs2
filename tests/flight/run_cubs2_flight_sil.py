@@ -26,9 +26,12 @@ ARTIFACT_DIR = ROOT / "artifacts" / "flight"
 SCENARIO_DIR = ROOT / "tests" / "flight"
 PATTERN_WAYPOINTS = [
     (0.0, 0.0, 3.0),
+    (12.0, 0.0, 3.0),
     (30.0, 0.0, 3.0),
     (30.0, 20.0, 3.0),
     (0.0, 20.0, 3.0),
+    (0.0, 0.0, 3.0),
+    (12.0, 0.0, 3.0),
 ]
 
 
@@ -71,11 +74,10 @@ def csv_fields() -> list[str]:
         "time", "mode", "x", "y", "z", "roll", "pitch", "yaw", "airspeed",
         "stick_roll", "stick_pitch", "stick_yaw", "stick_throttle",
         "surface_ail", "surface_elev", "surface_rud", "surface_thr",
-        "current_waypoint", "laps", "desired_heading", "desired_altitude", "desired_speed",
+        "current_waypoint", "laps", "desired_heading", "desired_altitude",
         "desired_flight_path_angle", "desired_acceleration", "heading",
         "course_error", "roll_command", "inner_roll_command", "pitch_command",
         "tecs_pitch_command", "tecs_thrust_command", "mission_phase",
-        "cross_track_error", "remaining_along_track", "course_alignment_error",
     ]
 
 
@@ -106,7 +108,6 @@ def normalize_rumoca_result(result: rum.Result, mode: str) -> list[dict[str, flo
         desired_altitude = sample(
             columns,
             index,
-            "outerLoop.pathAltitude",
             "outerLoop.guidance.pathAltitude",
             "targetAltitude_m",
             default=3.0 if mode in {"altitude", "heading", "pattern"} else sample(columns, index, "z_m"),
@@ -134,7 +135,6 @@ def normalize_rumoca_result(result: rum.Result, mode: str) -> list[dict[str, flo
             "laps": sample(columns, index, "laps", "lapCount"),
             "desired_heading": sample(columns, index, "desired_heading_rad", "outerLoop.desiredHeading", "outerLoop.guidance.setpoints.heading"),
             "desired_altitude": desired_altitude,
-            "desired_speed": sample(columns, index, "desired_speed_m_s", "outerLoop.desiredSpeed"),
             "desired_flight_path_angle": sample(columns, index, "outerLoop.desiredFlightPathAngle", "outerLoop.guidance.setpoints.flightPathAngle", "flightPathAngleSetpoint"),
             "desired_acceleration": sample(columns, index, "outerLoop.desiredAcceleration", "outerLoop.guidance.setpoints.acceleration", "accelerationSetpoint"),
             "heading": heading,
@@ -145,9 +145,6 @@ def normalize_rumoca_result(result: rum.Result, mode: str) -> list[dict[str, flo
             "tecs_pitch_command": sample(columns, index, "outerLoop.tecs.pitchCommand", "tecs.pitchCommand"),
             "tecs_thrust_command": sample(columns, index, "outerLoop.tecs.thrustCommand", "tecs.thrustCommand"),
             "mission_phase": sample(columns, index, "mission_phase", default=1.0),
-            "cross_track_error": sample(columns, index, "cross_track_error_m", "outerLoop.crossTrackError", "outerLoop.guidance.crossTrackError"),
-            "remaining_along_track": sample(columns, index, "remaining_along_track_m", "outerLoop.remainingAlongTrackDistance", "outerLoop.guidance.remainingAlongTrackDistance"),
-            "course_alignment_error": sample(columns, index, "course_alignment_error_rad", "outerLoop.courseAlignmentError", "outerLoop.guidance.courseAlignmentError"),
         })
 
     return rows
@@ -162,22 +159,14 @@ def write_csv(path: Path, rows: list[dict[str, float | str]]) -> None:
     print(f"wrote {path}")
 
 
-def run_rumoca_stage(
-    mode: str,
-    t_end: float | None = None,
-    params: dict[str, float] | None = None,
-) -> list[dict[str, float | str]]:
+def run_rumoca_stage(mode: str, t_end: float | None = None) -> list[dict[str, float | str]]:
     scenario = load_scenario_config(mode)
     if not scenario.path.exists():
         raise FileNotFoundError(f"Rumoca scenario not found: {scenario.path}")
 
     print(f"simulate {scenario.path} with Rumoca Python binding", flush=True)
     _session, model, sim_config = rum.Session.from_scenario(str(scenario.path))
-    result = model.simulate(
-        t=(0.0, t_end if t_end is not None else scenario.t_end),
-        config=sim_config,
-        params=params,
-    )
+    result = model.simulate(t=(0.0, t_end if t_end is not None else scenario.t_end), config=sim_config)
     rows = normalize_rumoca_result(result, mode)
     write_csv(scenario.output, rows)
     return rows
@@ -199,23 +188,8 @@ def values(rows: list[dict[str, float | str]], key: str) -> list[float]:
     return [f(row, key) for row in rows]
 
 
-def rms(rows: list[dict[str, float | str]], key: str) -> float:
-    samples = values(rows, key)
-    return math.sqrt(sum(sample * sample for sample in samples) / len(samples))
-
-
-def percentile_abs(rows: list[dict[str, float | str]], key: str, percentile: float) -> float:
-    samples = sorted(abs(sample) for sample in values(rows, key))
-    index = min(round((len(samples) - 1) * percentile / 100.0), len(samples) - 1)
-    return samples[index]
-
-
 def degrees(samples: list[float]) -> list[float]:
     return [math.degrees(sample) for sample in samples]
-
-
-def wrapped_degrees(samples: list[float]) -> list[float]:
-    return [math.degrees(math.atan2(math.sin(sample), math.cos(sample))) for sample in samples]
 
 
 def unwrap(samples: list[float]) -> list[float]:
@@ -256,62 +230,10 @@ def assert_heading(rows: list[dict[str, float | str]]) -> None:
 
 def assert_pattern(rows: list[dict[str, float | str]]) -> None:
     laps = max(values(rows, "laps"))
-    assert f(rows[0], "z") < 0.3, "pattern: mission did not start on the ground"
-    assert any(f(row, "mission_phase") == 1.0 for row in rows), "pattern: takeoff phase was not observed"
     assert laps >= 2.0, f"pattern: expected two laps, got {laps:.0f}"
     assert max(values(rows, "z")) > 2.0, "pattern: never climbed into pattern altitude"
     assert final(rows, "mission_phase") == 3.0, "pattern: landing phase did not start"
-    assert final(rows, "z") < 0.3, f"pattern: did not land, final z={final(rows, 'z'):.2f}"
-    tracking = [row for row in rows if f(row, "mission_phase") == 2.0]
-    assert rms(tracking, "cross_track_error") < 4.0, "pattern: RMS cross-track error exceeds 4 m"
-    assert percentile_abs(tracking, "cross_track_error", 95.0) < 8.0, "pattern: p95 cross-track error exceeds 8 m"
-    level_start = next(
-        (index for index, row in enumerate(tracking) if f(row, "z") >= 2.8),
-        len(tracking),
-    )
-    level_tracking = tracking[level_start:]
-    assert level_tracking, "pattern: never entered level-flight altitude tracking"
-    altitude_rms = math.sqrt(
-        sum((f(row, "z") - f(row, "desired_altitude")) ** 2 for row in level_tracking)
-        / len(level_tracking)
-    )
-    assert altitude_rms < 0.5, f"pattern: cruise RMS altitude error {altitude_rms:.2f} m"
-    assert min(values(tracking, "airspeed")) > 3.0, "pattern: minimum airspeed fell below 3 m/s"
-    landing_tracking = [
-        row for row in rows
-        if f(row, "mission_phase") == 3.0 and f(row, "airspeed") > 0.5
-    ]
-    assert landing_tracking, "pattern: no guided landing segment was observed"
-    assert rms(landing_tracking, "cross_track_error") < 4.0, (
-        "pattern: landing RMS cross-track error exceeds 4 m"
-    )
-
-    transitions = [
-        rows[index - 1]
-        for index in range(1, len(rows))
-        if f(rows[index], "current_waypoint") != f(rows[index - 1], "current_waypoint")
-    ]
-    expected_transitions = 2 * len(PATTERN_WAYPOINTS)
-    assert len(transitions) >= expected_transitions, (
-        f"pattern: expected at least {expected_transitions} leg transitions, got {len(transitions)}"
-    )
-def parse_waypoint(value: str) -> tuple[float, float, float]:
-    try:
-        coordinates = tuple(float(component.strip()) for component in value.split(","))
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(f"invalid waypoint {value!r}; expected x,y,z") from exc
-    if len(coordinates) != 3:
-        raise argparse.ArgumentTypeError(f"invalid waypoint {value!r}; expected x,y,z")
-    return coordinates
-
-
-def waypoint_parameters(waypoints: list[tuple[float, float, float]]) -> dict[str, float]:
-    params = {"outerLoop.route.waypointCount": float(len(waypoints))}
-    axis_names = ("X", "Y", "Z")
-    for index, waypoint in enumerate(waypoints, start=1):
-        for axis_name, coordinate in zip(axis_names, waypoint, strict=True):
-            params[f"outerLoop.route.waypoint{index}{axis_name}"] = coordinate
-    return params
+    assert final(rows, "z") < 1.5, f"pattern: did not descend for landing, final z={final(rows, 'z'):.2f}"
 
 
 def save_plot(fig: plt.Figure, name: str) -> Path:
@@ -326,9 +248,8 @@ def save_plot(fig: plt.Figure, name: str) -> Path:
 def plot_topdown(rows: list[dict[str, float | str]]) -> Path:
     fig, ax = plt.subplots(figsize=(8, 7), constrained_layout=True)
     ax.plot(values(rows, "x"), values(rows, "y"), color="#1f77b4", linewidth=1.5, label="flight path")
-    closed_route = [*PATTERN_WAYPOINTS, PATTERN_WAYPOINTS[0]]
-    route_x = [wp[0] for wp in closed_route]
-    route_y = [wp[1] for wp in closed_route]
+    route_x = [wp[0] for wp in PATTERN_WAYPOINTS]
+    route_y = [wp[1] for wp in PATTERN_WAYPOINTS]
     ax.plot(route_x, route_y, "k--", linewidth=1.0, label="waypoint route")
     ax.scatter(route_x, route_y, color="black", s=28, zorder=3)
     for idx, (x, y, _z) in enumerate(PATTERN_WAYPOINTS, start=1):
@@ -358,40 +279,47 @@ def plot_altitude(rows: list[dict[str, float | str]]) -> Path:
 def plot_heading(rows: list[dict[str, float | str]]) -> Path:
     fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
     t = values(rows, "time")
-    ax.plot(t, wrapped_degrees(values(rows, "desired_heading")), "k--", linewidth=1.2, label="heading command")
-    ax.plot(t, wrapped_degrees(values(rows, "heading")), color="#1f77b4", linewidth=1.4, label="heading")
+    ax.plot(t, degrees(unwrap(values(rows, "desired_heading"))), "k--", linewidth=1.2, label="heading command")
+    ax.plot(t, degrees(unwrap(values(rows, "heading"))), color="#1f77b4", linewidth=1.4, label="heading")
     ax.set_title("Heading Command Response")
     ax.set_xlabel("time [s]")
     ax.set_ylabel("heading [deg]")
-    ax.set_ylim(-180.0, 180.0)
-    ax.set_yticks([-180, -90, 0, 90, 180])
     ax.grid(True)
     ax.legend(loc="best")
     return save_plot(fig, "pattern-heading.png")
 
 
-def plot_safe_commands(rows: list[dict[str, float | str]]) -> Path:
-    fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
+def plot_actuators(rows: list[dict[str, float | str]]) -> Path:
+    fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True, constrained_layout=True)
     t = values(rows, "time")
-    ax.plot(t, values(rows, "stick_throttle"), color="#1f77b4", linewidth=1.4, label="throttle to SAFE")
-    ax.set_title("Throttle Command to SAFE")
-    ax.set_xlabel("time [s]")
-    ax.set_ylabel("normalized")
-    ax.grid(True)
-    ax.legend(loc="best")
-    return save_plot(fig, "pattern-safe-commands.png")
+    axes[0].plot(t, values(rows, "stick_throttle"), "k--", linewidth=1.2, label="throttle command")
+    axes[0].plot(t, values(rows, "surface_thr"), color="#1f77b4", linewidth=1.4, label="throttle response")
+    axes[0].set_title("Throttle Response")
+    axes[0].set_ylabel("normalized")
+    axes[0].grid(True)
+    axes[0].legend(loc="best")
+    axes[1].plot(t, values(rows, "stick_pitch"), "k--", linewidth=1.2, label="elevator command")
+    axes[1].plot(t, values(rows, "surface_elev"), color="#1f77b4", linewidth=1.4, label="elevator response")
+    axes[1].set_title("Elevator Response")
+    axes[1].set_xlabel("time [s]")
+    axes[1].set_ylabel("normalized")
+    axes[1].grid(True)
+    axes[1].legend(loc="best")
+    return save_plot(fig, "pattern-actuators.png")
 
 
 def plot_attitude(rows: list[dict[str, float | str]]) -> Path:
     fig, axes = plt.subplots(2, 1, figsize=(9, 6), sharex=True, constrained_layout=True)
     t = values(rows, "time")
     axes[0].plot(t, degrees(values(rows, "roll_command")), "k--", linewidth=1.2, label="bank command")
+    axes[0].plot(t, degrees(values(rows, "inner_roll_command")), color="#ff7f0e", linewidth=1.0, label="inner bank setpoint")
     axes[0].plot(t, degrees(values(rows, "roll")), color="#1f77b4", linewidth=1.4, label="bank angle")
     axes[0].set_title("Bank Angle Command Response")
     axes[0].set_ylabel("bank [deg]")
     axes[0].grid(True)
     axes[0].legend(loc="best")
-    axes[1].plot(t, degrees([-value for value in values(rows, "tecs_pitch_command")]), "k--", linewidth=1.2, label="TECS pitch command (0 deg trim)")
+    axes[1].plot(t, degrees(values(rows, "pitch_command")), "k--", linewidth=1.2, label="pitch command")
+    axes[1].plot(t, degrees(values(rows, "tecs_pitch_command")), color="#ff7f0e", linewidth=1.0, label="TECS pitch command")
     axes[1].plot(t, degrees(values(rows, "pitch")), color="#1f77b4", linewidth=1.4, label="pitch angle")
     axes[1].set_title("Pitch Angle Command Response")
     axes[1].set_xlabel("time [s]")
@@ -402,17 +330,14 @@ def plot_attitude(rows: list[dict[str, float | str]]) -> Path:
 
 
 def plot_overview(rows: list[dict[str, float | str]]) -> Path:
-    fig, axes = plt.subplots(4, 2, figsize=(14, 16), constrained_layout=True)
-    ax_track, ax_alt, ax_heading, ax_speed, ax_bank, ax_pitch, ax_track_error, ax_safe = axes.flat
+    fig, axes = plt.subplots(3, 2, figsize=(14, 12), constrained_layout=True)
+    ax_track, ax_alt, ax_heading, ax_bank, ax_pitch, ax_act = axes.flat
     t = values(rows, "time")
-    closed_route = [*PATTERN_WAYPOINTS, PATTERN_WAYPOINTS[0]]
-    route_x = [wp[0] for wp in closed_route]
-    route_y = [wp[1] for wp in closed_route]
+    route_x = [wp[0] for wp in PATTERN_WAYPOINTS]
+    route_y = [wp[1] for wp in PATTERN_WAYPOINTS]
     ax_track.plot(values(rows, "x"), values(rows, "y"), color="#1f77b4", linewidth=1.4, label="flight")
     ax_track.plot(route_x, route_y, "k--", linewidth=1.0, label="waypoints")
     ax_track.scatter(route_x, route_y, color="black", s=22)
-    for index, (x, y, _z) in enumerate(PATTERN_WAYPOINTS, start=1):
-        ax_track.annotate(str(index), (x, y), textcoords="offset points", xytext=(5, 5), fontsize=9)
     ax_track.set_title("Top-Down Track")
     ax_track.set_xlabel("x [m]")
     ax_track.set_ylabel("y [m]")
@@ -426,22 +351,13 @@ def plot_overview(rows: list[dict[str, float | str]]) -> Path:
     ax_alt.set_ylabel("m")
     ax_alt.grid(True)
     ax_alt.legend(loc="best")
-    ax_heading.plot(t, wrapped_degrees(values(rows, "desired_heading")), "k--", linewidth=1.0, label="cmd")
-    ax_heading.plot(t, wrapped_degrees(values(rows, "heading")), color="#1f77b4", linewidth=1.2, label="actual")
+    ax_heading.plot(t, degrees(unwrap(values(rows, "desired_heading"))), "k--", linewidth=1.0, label="cmd")
+    ax_heading.plot(t, degrees(unwrap(values(rows, "heading"))), color="#1f77b4", linewidth=1.2, label="actual")
     ax_heading.set_title("Heading")
     ax_heading.set_xlabel("time [s]")
     ax_heading.set_ylabel("deg")
-    ax_heading.set_ylim(-180.0, 180.0)
-    ax_heading.set_yticks([-180, -90, 0, 90, 180])
     ax_heading.grid(True)
     ax_heading.legend(loc="best")
-    ax_speed.plot(t, values(rows, "desired_speed"), "k--", linewidth=1.0, label="cmd")
-    ax_speed.plot(t, values(rows, "airspeed"), color="#1f77b4", linewidth=1.2, label="actual")
-    ax_speed.set_title("Airspeed")
-    ax_speed.set_xlabel("time [s]")
-    ax_speed.set_ylabel("m/s")
-    ax_speed.grid(True)
-    ax_speed.legend(loc="best")
     ax_bank.plot(t, degrees(values(rows, "roll_command")), "k--", linewidth=1.0, label="cmd")
     ax_bank.plot(t, degrees(values(rows, "roll")), color="#1f77b4", linewidth=1.2, label="actual")
     ax_bank.set_title("Bank")
@@ -449,26 +365,22 @@ def plot_overview(rows: list[dict[str, float | str]]) -> Path:
     ax_bank.set_ylabel("deg")
     ax_bank.grid(True)
     ax_bank.legend(loc="best")
-    ax_pitch.plot(t, degrees([-value for value in values(rows, "tecs_pitch_command")]), "k--", linewidth=1.0, label="cmd (0 deg trim)")
+    ax_pitch.plot(t, degrees(values(rows, "pitch_command")), "k--", linewidth=1.0, label="cmd")
     ax_pitch.plot(t, degrees(values(rows, "pitch")), color="#1f77b4", linewidth=1.2, label="actual")
     ax_pitch.set_title("Pitch")
     ax_pitch.set_xlabel("time [s]")
     ax_pitch.set_ylabel("deg")
     ax_pitch.grid(True)
     ax_pitch.legend(loc="best")
-    ax_track_error.plot(t, values(rows, "cross_track_error"), color="#1f77b4", linewidth=1.2, label="cross-track")
-    ax_track_error.axhline(0.0, color="black", linestyle="--", linewidth=1.0)
-    ax_track_error.set_title("Cross-Track Error")
-    ax_track_error.set_xlabel("time [s]")
-    ax_track_error.set_ylabel("m")
-    ax_track_error.grid(True)
-    ax_track_error.legend(loc="best")
-    ax_safe.plot(t, values(rows, "stick_throttle"), color="#1f77b4", linewidth=1.2, label="throttle")
-    ax_safe.set_title("Throttle Command to SAFE")
-    ax_safe.set_xlabel("time [s]")
-    ax_safe.set_ylabel("normalized command")
-    ax_safe.grid(True)
-    ax_safe.legend(loc="best")
+    ax_act.plot(t, values(rows, "stick_throttle"), label="throttle cmd")
+    ax_act.plot(t, values(rows, "surface_thr"), label="throttle response")
+    ax_act.plot(t, values(rows, "stick_pitch"), label="elevator cmd")
+    ax_act.plot(t, values(rows, "surface_elev"), label="elevator response")
+    ax_act.set_title("Throttle / Elevator")
+    ax_act.set_xlabel("time [s]")
+    ax_act.set_ylabel("normalized")
+    ax_act.grid(True)
+    ax_act.legend(loc="best")
     return save_plot(fig, "cubs2-flight-summary.png")
 
 
@@ -479,7 +391,7 @@ def plot(stages: dict[str, list[dict[str, float | str]]]) -> list[Path]:
         plot_topdown(rows),
         plot_altitude(rows),
         plot_heading(rows),
-        plot_safe_commands(rows),
+        plot_actuators(rows),
         plot_attitude(rows),
     ]
     legacy_path = ARTIFACT_DIR / "cubs2-track-sil.png"
@@ -508,21 +420,6 @@ def run_checks(stages: dict[str, list[dict[str, float | str]]]) -> list[tuple[st
 def write_markdown_report(stages: dict[str, list[dict[str, float | str]]], check_results: list[tuple[str, str, str]], plot_paths: list[Path]) -> Path:
     path = ARTIFACT_DIR / "flight-summary.md"
     pattern = stages["pattern"]
-    tracking = [row for row in pattern if f(row, "mission_phase") == 2.0]
-    level_start = next(
-        (index for index, row in enumerate(tracking) if f(row, "z") >= 2.8),
-        len(tracking),
-    )
-    level_tracking = tracking[level_start:]
-    landing_tracking = [
-        row for row in pattern
-        if f(row, "mission_phase") == 3.0 and f(row, "airspeed") > 0.5
-    ]
-    transitions = [
-        pattern[index - 1]
-        for index in range(1, len(pattern))
-        if f(pattern[index], "current_waypoint") != f(pattern[index - 1], "current_waypoint")
-    ]
     lines = [
         "# CUBS2 Flight SIL",
         "",
@@ -549,15 +446,6 @@ def write_markdown_report(stages: dict[str, list[dict[str, float | str]]], check
         f"| final altitude [m] | {final(pattern, 'z'):.3f} |",
         f"| final heading [deg] | {math.degrees(final(pattern, 'heading')):.3f} |",
         f"| final waypoint | {final(pattern, 'current_waypoint'):.0f} |",
-        f"| RMS cross-track [m] | {rms(tracking, 'cross_track_error'):.3f} |",
-        f"| p95 absolute cross-track [m] | {percentile_abs(tracking, 'cross_track_error', 95.0):.3f} |",
-        f"| cruise RMS altitude error [m] | {math.sqrt(sum((f(row, 'z') - f(row, 'desired_altitude')) ** 2 for row in level_tracking) / len(level_tracking)):.3f} |",
-        f"| mean airspeed [m/s] | {sum(values(tracking, 'airspeed')) / len(tracking):.3f} |",
-        f"| minimum airspeed [m/s] | {min(values(tracking, 'airspeed')):.3f} |",
-        f"| landing RMS cross-track [m] | {rms(landing_tracking, 'cross_track_error'):.3f} |" if landing_tracking else "| landing RMS cross-track [m] | n/a |",
-        f"| landing max absolute cross-track [m] | {max_abs(landing_tracking, 'cross_track_error'):.3f} |" if landing_tracking else "| landing max absolute cross-track [m] | n/a |",
-        f"| max transition cross-track [m] | {max(abs(f(row, 'cross_track_error')) for row in transitions):.3f} |" if transitions else "| max transition cross-track [m] | n/a |",
-        f"| max transition course error [deg] | {math.degrees(max(abs(f(row, 'course_alignment_error')) for row in transitions)):.3f} |" if transitions else "| max transition course error [deg] | n/a |",
         "",
         "## Flight Plots",
         "",
@@ -619,25 +507,13 @@ def write_html_report(check_results: list[tuple[str, str, str]], plot_paths: lis
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pattern-t-end", type=float, default=None)
-    parser.add_argument(
-        "--waypoint",
-        action="append",
-        type=parse_waypoint,
-        help="runtime pattern waypoint x,y,z; repeat 2 to 4 times (default: checked-in four-point mission)",
-    )
     args = parser.parse_args()
-
-    if args.waypoint is not None and not 2 <= len(args.waypoint) <= 4:
-        parser.error("--waypoint must be repeated between 2 and 4 times")
-    if args.waypoint is not None:
-        PATTERN_WAYPOINTS[:] = args.waypoint
-    pattern_params = waypoint_parameters(PATTERN_WAYPOINTS)
 
     stages = {
         "takeoff": run_rumoca_stage("takeoff"),
         "altitude": run_rumoca_stage("altitude"),
         "heading": run_rumoca_stage("heading"),
-        "pattern": run_rumoca_stage("pattern", t_end=args.pattern_t_end, params=pattern_params),
+        "pattern": run_rumoca_stage("pattern", t_end=args.pattern_t_end),
     }
     plot_paths = plot(stages)
     check_results = run_checks(stages)

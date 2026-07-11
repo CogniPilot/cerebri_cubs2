@@ -93,20 +93,28 @@ end Cubs2TakeoffOpenLoop;
 
 model Cubs2AltitudeHold
   parameter Real targetAltitude_m = 3.0;
+  parameter RouteParameters straightRoute =
+    RouteParameters(
+      nSegments = 6,
+      cruiseSpeed = 4.0,
+      waypointSwitchingDistance = 3.0,
+      waypoints = [
+        0.0,   0.0, 3.0;
+        30.0,  0.0, 3.0;
+        60.0,  0.0, 3.0;
+        90.0,  0.0, 3.0;
+        120.0, 0.0, 3.0;
+        150.0, 0.0, 3.0;
+        180.0, 0.0, 3.0
+      ]
+    );
 
   Cubs2Plant vehicle(
     p_start = {0.0, 0.0, targetAltitude_m},
     v_b_start = {4.0, 0.0, 0.0}
   );
   Cubs2InnerLoop innerLoop;
-  FixedWingOuterLoop outerLoop(
-    route(
-      waypointCount = 2,
-      cruiseSpeed = 4.0,
-      waypoint1X = 0.0, waypoint1Y = 0.0, waypoint1Z = 3.0,
-      waypoint2X = 180.0, waypoint2Y = 0.0, waypoint2Z = 3.0
-    )
-  );
+  FixedWingOuterLoop outerLoop(route = straightRoute);
 
   output Real time_s;
   output Real x_m;
@@ -127,6 +135,7 @@ equation
   outerLoop.euler_rad = euler_rad;
   outerLoop.velocity_m_s = vehicle.velocity;
   outerLoop.eulerRate_rad_s = vehicle.gyro;
+  outerLoop.engaged = 1.0;
 
   innerLoop.armed = 1.0;
   innerLoop.stick_roll = outerLoop.aileron;
@@ -155,6 +164,21 @@ end Cubs2AltitudeHold;
 model Cubs2HeadingHold
   parameter Real targetSpeed_m_s = 4.0;
   parameter Real targetAltitude_m = 3.0;
+  parameter RouteParameters straightRoute =
+    RouteParameters(
+      nSegments = 6,
+      cruiseSpeed = targetSpeed_m_s,
+      waypointSwitchingDistance = 3.0,
+      waypoints = [
+        0.0,   0.0, targetAltitude_m;
+        30.0,  0.0, targetAltitude_m;
+        60.0,  0.0, targetAltitude_m;
+        90.0,  0.0, targetAltitude_m;
+        120.0, 0.0, targetAltitude_m;
+        150.0, 0.0, targetAltitude_m;
+        180.0, 0.0, targetAltitude_m
+      ]
+    );
 
   Cubs2Plant vehicle(
     p_start = {0.0, 0.0, targetAltitude_m},
@@ -162,14 +186,7 @@ model Cubs2HeadingHold
     q_start = {0.9689124217106447, 0.0, 0.0, -0.24740395925452294}
   );
   Cubs2InnerLoop innerLoop;
-  FixedWingOuterLoop outerLoop(
-    route(
-      waypointCount = 2,
-      cruiseSpeed = targetSpeed_m_s,
-      waypoint1X = 0.0, waypoint1Y = 0.0, waypoint1Z = targetAltitude_m,
-      waypoint2X = 180.0, waypoint2Y = 0.0, waypoint2Z = targetAltitude_m
-    )
-  );
+  FixedWingOuterLoop outerLoop(route = straightRoute);
 
   output Real time_s;
   output Real x_m;
@@ -191,6 +208,7 @@ equation
   outerLoop.euler_rad = euler_rad;
   outerLoop.velocity_m_s = vehicle.velocity;
   outerLoop.eulerRate_rad_s = vehicle.gyro;
+  outerLoop.engaged = 1.0;
 
   innerLoop.armed = 1.0;
   innerLoop.stick_roll = outerLoop.aileron;
@@ -218,23 +236,28 @@ equation
 end Cubs2HeadingHold;
 
 model Cubs2PatternMission
+  parameter RouteParameters patternRoute =
+    RouteParameters(
+      nSegments = 6,
+      cruiseSpeed = 4.0,
+      waypointSwitchingDistance = 3.0,
+      waypoints = [
+        0.0,  0.0, 3.0;
+        12.0, 0.0, 3.0;
+        30.0, 0.0, 3.0;
+        30.0, 20.0, 3.0;
+        0.0,  20.0, 3.0;
+        0.0,  0.0, 3.0;
+        12.0, 0.0, 3.0
+      ]
+    );
+
   Cubs2Plant vehicle(
-    p_start = {30.0, 0.0, 0.149},
-    q_start = {0.0, 0.0, 0.0, 1.0}
+    p_start = {0.0, 0.0, 3.0},
+    v_b_start = {4.0, 0.0, 0.0}
   );
   Cubs2InnerLoop innerLoop;
-  FixedWingOuterLoop outerLoop(
-    initialWaypoint = 2,
-    reverseRoute = true,
-    route(
-      waypointCount = 4,
-      cruiseSpeed = 4.0,
-      waypoint1X = 0.0, waypoint1Y = 0.0, waypoint1Z = 3.0,
-      waypoint2X = 30.0, waypoint2Y = 0.0, waypoint2Z = 3.0,
-      waypoint3X = 30.0, waypoint3Y = 20.0, waypoint3Z = 3.0,
-      waypoint4X = 0.0, waypoint4Y = 20.0, waypoint4Z = 3.0
-    )
-  );
+  FixedWingOuterLoop outerLoop(route = patternRoute);
 
   output Real time_s;
   output Real x_m;
@@ -242,9 +265,6 @@ model Cubs2PatternMission
   output Real z_m;
   output Real airspeed_m_s;
   output Real desired_heading_rad;
-  output Real cross_track_error_m;
-  output Real remaining_along_track_m;
-  output Real course_alignment_error_rad;
   output Real current_waypoint;
   output Real laps;
   output Real roll_cmd;
@@ -255,7 +275,7 @@ model Cubs2PatternMission
 protected
   Real euler_rad[3];
   discrete Integer lapCount(start = 0, fixed = true);
-  discrete Integer previousWaypoint(start = 2, fixed = true);
+  discrete Integer previousWaypoint(start = 1, fixed = true);
   discrete Boolean landing(start = false, fixed = true);
 
 algorithm
@@ -263,21 +283,15 @@ algorithm
     if not pre(landing)
        and outerLoop.airborne
        and vehicle.position[3] > 2.0
-       and pre(previousWaypoint) <> outerLoop.initialWaypoint
-       and outerLoop.currentWaypoint == outerLoop.initialWaypoint then
+       and pre(previousWaypoint) == 6
+       and outerLoop.currentWaypoint == 1 then
       lapCount := pre(lapCount) + 1;
     else
       lapCount := pre(lapCount);
     end if;
 
     previousWaypoint := outerLoop.currentWaypoint;
-    // Finish the second-lap turn before cutting thrust. Starting the approach
-    // at the waypoint transition leaves the aircraft several metres off the
-    // new final leg and removes the energy needed to capture it.
-    landing := pre(landing)
-      or (pre(lapCount) >= 2
-          and abs(outerLoop.crossTrackError) < 2.0
-          and abs(outerLoop.courseAlignmentError) < 0.8);
+    landing := pre(landing) or lapCount >= 2;
   end when;
 
 equation
@@ -287,16 +301,13 @@ equation
   outerLoop.euler_rad = euler_rad;
   outerLoop.velocity_m_s = vehicle.velocity;
   outerLoop.eulerRate_rad_s = vehicle.gyro;
+  outerLoop.engaged = 1.0;
 
-  // The second-lap wrap enters waypoint 2 -> 1, one of the 30 m legs.
-  // Landing only cuts thrust: route guidance and TECS pitch control remain
-  // engaged through the approach, then the inner loop disarms after stopping.
-  innerLoop.armed = if landing and vehicle.position[3] < 0.2
-                       and vehicle.airspeed < 0.5 then 0.0 else 1.0;
-  innerLoop.stick_roll = outerLoop.aileron;
-  innerLoop.stick_pitch = outerLoop.elevator;
-  innerLoop.stick_yaw = outerLoop.rudder;
-  innerLoop.stick_throttle = if landing then 0.0 else outerLoop.throttle;
+  innerLoop.armed = if landing and vehicle.position[3] < 0.4 then 0.0 else 1.0;
+  innerLoop.stick_roll = if landing then 0.0 else outerLoop.aileron;
+  innerLoop.stick_pitch = if landing then -0.25 else outerLoop.elevator;
+  innerLoop.stick_yaw = if landing then 0.0 else outerLoop.rudder;
+  innerLoop.stick_throttle = if landing then 0.12 else outerLoop.throttle;
   innerLoop.gyro = vehicle.gyro;
   innerLoop.up_body = vehicle.up_body;
   innerLoop.airspeed = vehicle.airspeed;
@@ -312,9 +323,6 @@ equation
   z_m = vehicle.position[3];
   airspeed_m_s = vehicle.airspeed;
   desired_heading_rad = outerLoop.desiredHeading;
-  cross_track_error_m = outerLoop.crossTrackError;
-  remaining_along_track_m = outerLoop.remainingAlongTrackDistance;
-  course_alignment_error_rad = outerLoop.courseAlignmentError;
   current_waypoint = outerLoop.currentWaypoint;
   laps = lapCount;
   roll_cmd = innerLoop.stick_roll;

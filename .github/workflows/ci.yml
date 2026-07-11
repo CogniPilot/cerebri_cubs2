@@ -242,9 +242,9 @@ jobs:
       - name: Run Zephyr SIL flight test
         working-directory: cerebri_cubs2
         run: |
-          chmod +x build-native_sim/zephyr/zephyr.exe
+          chmod +x build-native_sim_sil/zephyr/zephyr.exe
           nix $NIX_FLAGS run .#native-sim-sil-run -- \
-            --sim build-native_sim/zephyr/zephyr.exe
+            --sim build-native_sim_sil/zephyr/zephyr.exe
           test -s artifacts/native-sim-sil/native-sim-overview.png
 
       - name: Build native_sim/native/64 executable
@@ -257,9 +257,9 @@ jobs:
         working-directory: cerebri_cubs2
         run: |
           mkdir -p dist/native_sim
-          cp build-native_sim/zephyr/zephyr.exe dist/native_sim/native_sim-zephyr.exe
-          cp build-native_sim/zephyr/zephyr.elf dist/native_sim/native_sim-zephyr.elf
-          cp build-native_sim/zephyr/zephyr.map dist/native_sim/native_sim-zephyr.map
+          cp build-native_sim_sil/zephyr/zephyr.exe dist/native_sim/native_sim-zephyr.exe
+          cp build-native_sim_sil/zephyr/zephyr.elf dist/native_sim/native_sim-zephyr.elf
+          cp build-native_sim_sil/zephyr/zephyr.map dist/native_sim/native_sim-zephyr.map
 
       - name: Upload native_sim binaries
         if: ${{ needs.release_tag.outputs.enabled == 'true' }}
@@ -274,9 +274,9 @@ jobs:
         working-directory: cerebri_cubs2
         run: |
           mkdir -p dist/native_sim_64
-          cp build-native_sim_native_64/zephyr/zephyr.exe dist/native_sim_64/native_sim_64-zephyr.exe
-          cp build-native_sim_native_64/zephyr/zephyr.elf dist/native_sim_64/native_sim_64-zephyr.elf
-          cp build-native_sim_native_64/zephyr/zephyr.map dist/native_sim_64/native_sim_64-zephyr.map
+          cp build-native_sim_native_64_sil/zephyr/zephyr.exe dist/native_sim_64/native_sim_64-zephyr.exe
+          cp build-native_sim_native_64_sil/zephyr/zephyr.elf dist/native_sim_64/native_sim_64-zephyr.elf
+          cp build-native_sim_native_64_sil/zephyr/zephyr.map dist/native_sim_64/native_sim_64-zephyr.map
 
       - name: Upload native_sim/native/64 binaries
         if: ${{ needs.release_tag.outputs.enabled == 'true' }}
