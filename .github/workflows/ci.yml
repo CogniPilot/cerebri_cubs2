@@ -17,14 +17,11 @@ concurrency:
 
 permissions:
   contents: read
-  id-token: write
 
 env:
   NIX_FLAGS: >-
     --quiet
     --option warn-dirty false
-    --option http-connections 1
-    --option max-substitution-jobs 1
   CUBS2_QUIET_LOGS: "1"
   CUBS2_LOG_TAIL_LINES: "200"
 
@@ -75,6 +72,8 @@ jobs:
 
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
 
       - name: Run Rumoca fmt/lint
         working-directory: cerebri_cubs2
@@ -111,6 +110,8 @@ jobs:
 
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
@@ -168,6 +169,8 @@ jobs:
 
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
@@ -225,6 +228,8 @@ jobs:
 
       - name: Set up Nix
         uses: DeterminateSystems/nix-installer-action@v22
+        with:
+          determinate: false
 
       - name: Update west workspace
         working-directory: cerebri_cubs2
