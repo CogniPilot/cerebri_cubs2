@@ -334,6 +334,7 @@ int main(void) {
     if (auto_mode && !ctx->previous_auto_mode) {
       EFMI_INIT(FixedWingOuterLoop, &g_model);
       EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
+      cubs2_runtime_control_restore(&g_model);
     }
     ctx->previous_auto_mode = auto_mode;
     cubs2_runtime_control_apply(&g_model, !ctx->manual.valid ||

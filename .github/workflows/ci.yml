@@ -239,6 +239,10 @@ jobs:
         working-directory: cerebri_cubs2
         run: nix $NIX_FLAGS run .#build-native-sim
 
+      - name: Test runtime control requests and state transitions
+        working-directory: cerebri_cubs2
+        run: tests/runtime_control/run.sh build-native_sim_sil
+
       - name: Run Zephyr SIL flight test
         working-directory: cerebri_cubs2
         run: |
