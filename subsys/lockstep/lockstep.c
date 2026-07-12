@@ -6,7 +6,7 @@
 
 #include <zephyr/sys/util.h>
 
-#if defined(CONFIG_CUBS2_LOCKSTEP)
+#if defined(CONFIG_CUBS2_SIM_TRANSPORT)
 #include <cerebri_lockstep/sequence.h>
 #endif
 
@@ -27,13 +27,13 @@ static struct cubs2_lockstep_shared *g_shared = &cubs2_fastdyn_lockstep_shared;
 static struct cubs2_lockstep_shared *g_shared;
 #endif
 
-#if defined(CONFIG_CUBS2_LOCKSTEP)
+#if defined(CONFIG_CUBS2_SIM_TRANSPORT)
 static struct cerebri_lockstep_sequence g_lockstep;
 #endif
 
 int cubs2_lockstep_start(void)
 {
-#if defined(CONFIG_CUBS2_LOCKSTEP)
+#if defined(CONFIG_CUBS2_SIM_TRANSPORT)
 #if defined(CONFIG_BOARD_NATIVE_SIM)
 	char *path = nsi_host_getenv("CUBS2_NATIVE_SIL_SHM");
 
@@ -67,7 +67,7 @@ bool cubs2_lockstep_enabled(void)
 
 int cubs2_lockstep_receive(synapse_topic_OdometryData_t *odometry)
 {
-#if defined(CONFIG_CUBS2_LOCKSTEP)
+#if defined(CONFIG_CUBS2_SIM_TRANSPORT)
 	int rc = cerebri_lockstep_sequence_wait(&g_lockstep);
 
 	if (rc == -ECANCELED) {
@@ -90,7 +90,7 @@ int cubs2_lockstep_receive(synapse_topic_OdometryData_t *odometry)
 int cubs2_lockstep_send(const synapse_topic_PwmSignalOutputsData_t *pwm,
 			const synapse_topic_AttitudeCommandData_t *attitude)
 {
-#if defined(CONFIG_CUBS2_LOCKSTEP)
+#if defined(CONFIG_CUBS2_SIM_TRANSPORT)
 	g_shared->pwm = *pwm;
 	g_shared->attitude = *attitude;
 	cerebri_lockstep_sequence_respond(&g_lockstep);

@@ -7,6 +7,9 @@
 #include <csyn/csyn_zros.h>
 
 #include "FixedWingOuterLoop.h"
+#if defined(CONFIG_CUBS2_FASTDYN)
+#include "lockstep.h"
+#endif
 #include "runtime_control.h"
 
 #include <math.h>
@@ -37,6 +40,10 @@ LOG_MODULE_REGISTER(cubs2, LOG_LEVEL_INF);
 
 struct control_context {
   struct csyn_mocap_rigid_body mocap;
+#if defined(CONFIG_CUBS2_FASTDYN)
+  synapse_topic_OdometryData_t odometry;
+  uint64_t next_control_time_us;
+#endif
   struct csyn_manual_control manual;
   csyn_rc_channels16_t control_rc;
   synapse_topic_PwmSignalOutputsData_t pwm_outputs;
@@ -72,6 +79,45 @@ static struct zros_pub g_navigation_target_pub;
 /* Mocap: RawPose subscribed directly on the deployment key; csyn enforces
  * the RawPoseData value contract before the sample reaches the store.
  */
+#if defined(CONFIG_CUBS2_FASTDYN)
+static bool odometry_valid(const synapse_topic_OdometryData_t *odometry) {
+  const uint32_t required = synapse_topic_OdometryFlags_PositionValid |
+                            synapse_topic_OdometryFlags_AttitudeValid;
+  const uint32_t reject = synapse_topic_OdometryFlags_OutlierRejected |
+                          synapse_topic_OdometryFlags_Lost;
+
+  return (odometry->flags & required) == required &&
+         (odometry->flags & reject) == 0U &&
+         odometry->status != synapse_topic_OdometryStatus_Lost &&
+         odometry->status != synapse_topic_OdometryStatus_OutlierRejected;
+}
+
+static void read_fastdyn_odometry(struct control_context *ctx) {
+  const synapse_topic_OdometryData_t *odometry = &ctx->odometry;
+
+  ctx->mocap = (struct csyn_mocap_rigid_body){
+      .x = odometry->pose.position_enu_m.x,
+      .y = odometry->pose.position_enu_m.y,
+      .z = odometry->pose.position_enu_m.z,
+      .qw = odometry->pose.attitude.w,
+      .qx = odometry->pose.attitude.x,
+      .qy = odometry->pose.attitude.y,
+      .qz = odometry->pose.attitude.z,
+      .valid = odometry_valid(odometry),
+  };
+}
+
+static bool fastdyn_control_step_due(struct control_context *ctx) {
+  if (ctx->odometry.timestamp_us < ctx->next_control_time_us) {
+    return false;
+  }
+
+  ctx->next_control_time_us =
+      ((ctx->odometry.timestamp_us / CUBS2_CONTROL_PERIOD_US) + 1U) *
+      CUBS2_CONTROL_PERIOD_US;
+  return true;
+}
+#else
 static struct csyn_topic *g_pose_raw_topic;
 
 static bool read_mocap_if_updated(struct control_context *ctx) {
@@ -113,8 +159,10 @@ static bool read_mocap_if_updated(struct control_context *ctx) {
   };
   return true;
 }
+#endif
 
 static bool read_manual_if_updated(struct control_context *ctx) {
+#if defined(CONFIG_CSYN_ZROS_BRIDGE)
   uint32_t generation = csyn_zros_generation(&topic_manual_control);
 
   if (generation == 0U || generation == ctx->manual_generation) {
@@ -127,6 +175,10 @@ static bool read_manual_if_updated(struct control_context *ctx) {
 
   ctx->manual_generation = generation;
   return true;
+#else
+  ARG_UNUSED(ctx);
+  return false;
+#endif
 }
 
 static void fixed_wing_map_input(FixedWingOuterLoopState *model,
@@ -160,8 +212,14 @@ static void fixed_wing_map_output(const FixedWingOuterLoopState *model,
                                   csyn_rc_channels16_t *rc) {
   /* Wire is nose-up = high us on ch1 (2026-07-09 flight): no negations. */
   *rc = (csyn_rc_channels16_t){
+#if defined(CONFIG_CUBS2_FASTDYN)
+      /* The CMM SportCub plant uses its aerodynamic surface convention. */
+      .ch0 = csyn_pwm_from_centered_axis(-(float)model->aileron),
+      .ch1 = csyn_pwm_from_centered_axis(-(float)model->elevator),
+#else
       .ch0 = csyn_pwm_from_centered_axis((float)model->aileron),
       .ch1 = csyn_pwm_from_centered_axis((float)model->elevator),
+#endif
       .ch2 = csyn_pwm_from_throttle_axis((float)model->throttle),
       .ch3 = csyn_pwm_from_centered_axis((float)model->rudder),
       .ch4 = (int32_t)csyn_clampf((float)model->stabilizer, 1000.0f, 2000.0f),
@@ -369,8 +427,8 @@ static void update_navigation_target(struct control_context *ctx,
   };
 }
 
-static void update_telemetry(struct control_context *ctx, bool auto_mode) {
-  uint64_t now_us = (uint64_t)k_uptime_get() * 1000ULL;
+static void update_telemetry(struct control_context *ctx, bool auto_mode,
+                             uint64_t now_us) {
   bool armed = !ctx->manual.valid || ctx->manual.rc.ch6 >= 1500;
 
   ctx->vehicle_health = (synapse_topic_VehicleHealthData_t){
@@ -419,10 +477,16 @@ static void update_telemetry(struct control_context *ctx, bool auto_mode) {
 }
 
 static void publish_outputs(struct control_context *ctx, bool auto_mode) {
+#if defined(CONFIG_CUBS2_FASTDYN)
+  uint64_t now_us = ctx->odometry.timestamp_us;
+#else
+  uint64_t now_us = (uint64_t)k_uptime_get() * 1000ULL;
+#endif
+
   csyn_pwm_outputs_from_rc(&ctx->control_rc, &ctx->pwm_outputs,
-                           k_uptime_get() * 1000LL);
+                           (int64_t)now_us);
   (void)zros_pub_update(&g_pwm_outputs_pub);
-  update_telemetry(ctx, auto_mode);
+  update_telemetry(ctx, auto_mode, now_us);
 }
 
 int main(void) {
@@ -438,11 +502,18 @@ int main(void) {
     LOG_ERR("failed to register runtime configuration services");
     return -1;
   }
+#if defined(CONFIG_CUBS2_FASTDYN)
+  rc = cubs2_lockstep_start();
+  if (rc != 0) {
+    return rc;
+  }
+#else
   g_pose_raw_topic = csyn_topic_find("pose_raw");
   if (g_pose_raw_topic == NULL) {
     LOG_ERR("pose_raw topic missing");
     return -1;
   }
+#endif
 
   rc = control_pubs_init();
   if (rc != 0) {
@@ -451,19 +522,29 @@ int main(void) {
 
   LOG_INF("CUBS2 fixed-wing control starting");
 
+#if !defined(CONFIG_CUBS2_FASTDYN)
   /* Absolute-period scheduling: relative sleep adds the work time to every
-   * cycle, stretching the model's fixed dt and scaling all derivatives.
-   */
+   * cycle, stretching the model's fixed dt and scaling all derivatives. */
   int64_t next_cycle_ticks = k_uptime_ticks();
   const uint32_t period_ticks =
       k_ns_to_ticks_ceil32(CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS);
+#endif
 
   while (true) {
     uint32_t start_cycles = k_cycle_get_32();
     csyn_rc_channels16_t auto_rc = {0};
     bool auto_mode;
+    bool step_control = true;
 
+#if defined(CONFIG_CUBS2_FASTDYN)
+    if (cubs2_lockstep_receive(&ctx->odometry) != 0) {
+      return -EIO;
+    }
+    read_fastdyn_odometry(ctx);
+    step_control = fastdyn_control_step_due(ctx);
+#else
     (void)read_mocap_if_updated(ctx);
+#endif
     (void)read_manual_if_updated(ctx);
 
     auto_mode = auto_mode_selected(ctx);
@@ -471,11 +552,9 @@ int main(void) {
     cubs2_runtime_control_apply(&g_model, !ctx->manual.valid ||
                                               ctx->manual.rc.ch6 >= 1500);
 
-    /* The model steps whenever a pose is available, in every mode, so
-     * the estimator is always warm: engaging auto mid-air is seamless
-     * instead of flying blind while filters spin up from zero.
-     */
-    if (ctx->mocap.valid) {
+    /* The estimator stays warm while manual. FastDyn receives plant samples
+     * at 100 Hz but preserves the model's 50 Hz fixed step. */
+    if (step_control && ctx->mocap.valid) {
       fixed_wing_map_input(&g_model, &ctx->mocap);
       g_model.engaged = auto_mode ? 1.0 : 0.0;
       EFMI_STEP(FixedWingOuterLoop, &g_model);
@@ -494,11 +573,17 @@ int main(void) {
 
     ctx->main_loop_us = k_cyc_to_us_floor32(k_cycle_get_32() - start_cycles);
     publish_outputs(ctx, auto_mode);
+#if defined(CONFIG_CUBS2_FASTDYN)
+    if (cubs2_lockstep_send(&ctx->pwm_outputs, &ctx->attitude_command) != 0) {
+      return -EIO;
+    }
+#else
     next_cycle_ticks += period_ticks;
     if (k_uptime_ticks() > next_cycle_ticks + 2 * (int64_t)period_ticks) {
       next_cycle_ticks = k_uptime_ticks(); /* resync after a stall */
     }
     k_sleep(K_TIMEOUT_ABS_TICKS(next_cycle_ticks));
+#endif
   }
 
   return 0;

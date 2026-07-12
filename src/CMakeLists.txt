@@ -6,10 +6,14 @@ else()
   set(CUBS2_MAIN_SOURCE main_sil.c)
 endif()
 
+if(CONFIG_CUBS2_RUNTIME_CONTROL)
+  set(CUBS2_RUNTIME_CONTROL_SOURCE runtime_control.c)
+endif()
+
 target_sources(app PRIVATE
   ${CUBS2_MAIN_SOURCE}
+  ${CUBS2_RUNTIME_CONTROL_SOURCE}
   csyn_topics.c
-  runtime_control.c
   zros_topics.c
 )
 
@@ -25,7 +29,7 @@ if(CONFIG_CODE_DATA_RELOCATION AND CONFIG_BOARD_MR_VMU_TROPIC_MIMXRT1064)
   zephyr_code_relocate(
     FILES
       ${CUBS2_MAIN_SOURCE}
-      runtime_control.c
+      ${CUBS2_RUNTIME_CONTROL_SOURCE}
       ${CUBS2_EFMI_CONTROL_SOURCES}
       ${ZEPHYR_CSYN_MODULE_DIR}/src/csyn_codec.c
       ${ZEPHYR_CSYN_MODULE_DIR}/src/csyn_zros_bridge.c
