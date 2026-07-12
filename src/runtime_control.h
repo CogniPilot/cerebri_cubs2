@@ -12,6 +12,7 @@
 #if defined(CONFIG_CUBS2_RUNTIME_CONTROL)
 bool cubs2_runtime_control_init(FixedWingOuterLoopState *model);
 void cubs2_runtime_control_apply(FixedWingOuterLoopState *model, bool armed);
+void cubs2_runtime_control_restore(FixedWingOuterLoopState *model);
 #else
 static inline bool cubs2_runtime_control_init(FixedWingOuterLoopState *model) {
   (void)model;
@@ -22,6 +23,11 @@ static inline void cubs2_runtime_control_apply(FixedWingOuterLoopState *model,
                                                bool armed) {
   (void)model;
   (void)armed;
+}
+
+static inline void
+cubs2_runtime_control_restore(FixedWingOuterLoopState *model) {
+  (void)model;
 }
 #endif
 

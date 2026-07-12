@@ -17,6 +17,7 @@
 #include <synapse/trajectory_reader.h>
 #include <synapse/transfer_builder.h>
 #include <synapse/transfer_reader.h>
+#include <synapse/transfer_verifier.h>
 
 #define CUBS2_MAX_SEGMENTS 6U
 #define CUBS2_MAX_POINTS (CUBS2_MAX_SEGMENTS + 1U)
@@ -38,8 +39,13 @@ struct runtime_control {
   bool pending_mission;
   double pending_values[32];
   bool pending_value_set[32];
+  double applied_values[32];
+  bool applied_value_set[32];
   double pending_waypoints[CUBS2_MAX_POINTS][3];
   uint32_t pending_segments;
+  double applied_waypoints[CUBS2_MAX_POINTS][3];
+  uint32_t applied_segments;
+  bool applied_mission;
 };
 
 static struct runtime_control g_runtime;
@@ -98,6 +104,41 @@ static struct runtime_value values[] = {
     VALUE(attitude_pitchPid_integralMax,
           attitude_pitchController_params_integralMax, 0.0, 10.0),
 };
+
+BUILD_ASSERT(ARRAY_SIZE(values) <= ARRAY_SIZE(g_runtime.pending_values));
+
+static void apply_value(FixedWingOuterLoopState *model, size_t index,
+                        double value) {
+  *(double *)((uint8_t *)model + values[index].live_offset) = value;
+  *(double *)((uint8_t *)model + values[index].mirror_offset) = value;
+}
+
+static void apply_route(FixedWingOuterLoopState *model,
+                        const double waypoints[CUBS2_MAX_POINTS][3],
+                        uint32_t segments) {
+  int32_t active_leg = CLAMP(model->currentWaypoint, 1, (int32_t)segments);
+
+  model->route_nSegments = (int32_t)segments;
+  model->guidance_route_nSegments = (int32_t)segments;
+  for (size_t row = 0U; row < CUBS2_MAX_POINTS; row++) {
+    size_t source_row = MIN(row, (size_t)segments);
+
+    for (size_t column = 0U; column < 3U; column++) {
+      model->route_waypoints[row][column] = waypoints[source_row][column];
+      model->guidance_route_waypoints[row][column] =
+          waypoints[source_row][column];
+    }
+  }
+
+  /* Rumoca's route block reads previous_guidance_currentWaypoint at the next
+   * step. Keep every public, nested, and previous-state copy on a valid leg
+   * when a shorter route replaces the active mission. */
+  model->currentWaypoint = active_leg;
+  model->guidance_currentWaypoint = active_leg;
+  model->guidance_activeWaypoint = active_leg;
+  model->previous_guidance_currentWaypoint = active_leg;
+  model->guidance_segmentEndIndex = active_leg + 1;
+}
 
 static const char *canonical_name(const char *name) {
   /* The public parameter names follow the Modelica names. */
@@ -232,7 +273,8 @@ static bool build_param_get_reply(uint8_t *reply, size_t capacity,
 static bool
 build_trajectory_reply(uint8_t *reply, size_t capacity, size_t *reply_len,
                        synapse_types_CommandResultCode_enum_t result,
-                       int32_t detail) {
+                       uint32_t plan_version, int32_t detail,
+                       uint32_t failed_seq) {
   flatcc_builder_t builder;
   synapse_cmd_TrajectorySetReply_ref_t root;
 
@@ -242,13 +284,22 @@ build_trajectory_reply(uint8_t *reply, size_t capacity, size_t *reply_len,
     return false;
   }
   root = synapse_cmd_TrajectorySetReply_create(
-      &builder, result, CUBS2_TRAJECTORY_ID, g_runtime.plan_version, detail, 0U,
+      &builder, result, CUBS2_TRAJECTORY_ID, plan_version, detail, failed_seq,
       0U);
   if (root == 0 || flatbuffers_buffer_end(&builder, root) == 0) {
     flatcc_builder_clear(&builder);
     return false;
   }
   return finish_reply(&builder, reply, capacity, reply_len);
+}
+
+static uint32_t current_plan_version(void) {
+  uint32_t version;
+
+  k_mutex_lock(&g_runtime.lock, K_FOREVER);
+  version = g_runtime.plan_version;
+  k_mutex_unlock(&g_runtime.lock);
+  return version;
 }
 
 static bool handle_param_set(const uint8_t *request, size_t request_len,
@@ -260,8 +311,14 @@ static bool handle_param_set(const uint8_t *request, size_t request_len,
   double number;
   int index;
 
+  if (request == NULL ||
+      synapse_cmd_ParamSetRequest_verify_as_root(request, request_len) != 0) {
+    return build_param_set_reply(reply, capacity, reply_len,
+                                 synapse_types_CommandResultCode_Failed, "",
+                                 0.0, -1);
+  }
   root = synapse_cmd_ParamSetRequest_as_root(request);
-  if (root == NULL || request_len < 8U ||
+  if (root == NULL ||
       (value = synapse_cmd_ParamSetRequest_value(root)) == NULL ||
       (name = synapse_cmd_ParamValue_name(value)) == NULL ||
       synapse_cmd_ParamValue_kind(value) != synapse_cmd_ParamKind_Float) {
@@ -298,14 +355,19 @@ static bool handle_param_set(const uint8_t *request, size_t request_len,
 static bool handle_param_get(const uint8_t *request, size_t request_len,
                              uint8_t *reply, size_t capacity,
                              size_t *reply_len) {
-  synapse_cmd_ParamGetRequest_table_t root =
-      synapse_cmd_ParamGetRequest_as_root(request);
+  synapse_cmd_ParamGetRequest_table_t root;
   const char *name;
   int index;
   double number;
 
-  if (root == NULL || request_len < 8U ||
-      (name = synapse_cmd_ParamGetRequest_name(root)) == NULL) {
+  if (request == NULL ||
+      synapse_cmd_ParamGetRequest_verify_as_root(request, request_len) != 0) {
+    return build_param_get_reply(reply, capacity, reply_len,
+                                 synapse_types_CommandResultCode_Failed, "",
+                                 0.0, -1);
+  }
+  root = synapse_cmd_ParamGetRequest_as_root(request);
+  if (root == NULL || (name = synapse_cmd_ParamGetRequest_name(root)) == NULL) {
     return build_param_get_reply(reply, capacity, reply_len,
                                  synapse_types_CommandResultCode_Failed, "",
                                  0.0, -1);
@@ -329,22 +391,35 @@ static bool handle_trajectory_set(const uint8_t *request, size_t request_len,
                                   size_t *reply_len) {
   synapse_cmd_TrajectorySetRequest_table_t root;
   synapse_topic_TrajectorySegmentData_vec_t segments;
+  double waypoints[CUBS2_MAX_POINTS][3] = {0};
+  uint32_t expected_version;
+  uint32_t reply_version;
   size_t count;
 
-  root = synapse_cmd_TrajectorySetRequest_as_root(request);
-  if (root == NULL || request_len < 8U ||
-      (segments = synapse_cmd_TrajectorySetRequest_segments(root)) == NULL) {
+  if (request == NULL || synapse_cmd_TrajectorySetRequest_verify_as_root(
+                             request, request_len) != 0) {
+    reply_version = current_plan_version();
     return build_trajectory_reply(reply, capacity, reply_len,
-                                  synapse_types_CommandResultCode_Failed, -1);
+                                  synapse_types_CommandResultCode_Failed,
+                                  reply_version, -1, 0U);
+  }
+  root = synapse_cmd_TrajectorySetRequest_as_root(request);
+  if (root == NULL ||
+      (segments = synapse_cmd_TrajectorySetRequest_segments(root)) == NULL) {
+    reply_version = current_plan_version();
+    return build_trajectory_reply(reply, capacity, reply_len,
+                                  synapse_types_CommandResultCode_Failed,
+                                  reply_version, -1, 0U);
   }
   count = synapse_topic_TrajectorySegmentData_vec_len(segments);
   if (count == 0U || count > CUBS2_MAX_SEGMENTS ||
       synapse_cmd_TrajectorySetRequest_total(root) != count) {
+    reply_version = current_plan_version();
     return build_trajectory_reply(reply, capacity, reply_len,
-                                  synapse_types_CommandResultCode_Denied, -2);
+                                  synapse_types_CommandResultCode_Denied,
+                                  reply_version, -2, 0U);
   }
 
-  k_mutex_lock(&g_runtime.lock, K_FOREVER);
   for (size_t i = 0U; i < count; i++) {
     synapse_topic_TrajectorySegmentData_struct_t segment =
         synapse_topic_TrajectorySegmentData_vec_at(segments, i);
@@ -358,25 +433,45 @@ static bool handle_trajectory_set(const uint8_t *request, size_t request_len,
             synapse_types_LocalFrame_LocalEnu ||
         !isfinite(start->x) || !isfinite(start->y) || !isfinite(start->z) ||
         !isfinite(end->x) || !isfinite(end->y) || !isfinite(end->z)) {
-      k_mutex_unlock(&g_runtime.lock);
+      reply_version = current_plan_version();
       return build_trajectory_reply(reply, capacity, reply_len,
-                                    synapse_types_CommandResultCode_Denied, -3);
+                                    synapse_types_CommandResultCode_Denied,
+                                    reply_version, -3, (uint32_t)i);
     }
     if (i == 0U) {
-      g_runtime.pending_waypoints[0][0] = start->x;
-      g_runtime.pending_waypoints[0][1] = start->y;
-      g_runtime.pending_waypoints[0][2] = start->z;
+      waypoints[0][0] = start->x;
+      waypoints[0][1] = start->y;
+      waypoints[0][2] = start->z;
     }
-    g_runtime.pending_waypoints[i + 1U][0] = end->x;
-    g_runtime.pending_waypoints[i + 1U][1] = end->y;
-    g_runtime.pending_waypoints[i + 1U][2] = end->z;
+    waypoints[i + 1U][0] = end->x;
+    waypoints[i + 1U][1] = end->y;
+    waypoints[i + 1U][2] = end->z;
   }
+
+  expected_version =
+      synapse_cmd_TrajectorySetRequest_expected_plan_version(root);
+  k_mutex_lock(&g_runtime.lock, K_FOREVER);
+  if (expected_version != 0U && expected_version != g_runtime.plan_version) {
+    reply_version = g_runtime.plan_version;
+    k_mutex_unlock(&g_runtime.lock);
+    return build_trajectory_reply(
+        reply, capacity, reply_len,
+        synapse_types_CommandResultCode_TemporarilyRejected, reply_version, -4,
+        0U);
+  }
+  memcpy(g_runtime.pending_waypoints, waypoints, sizeof(waypoints));
   g_runtime.pending_segments = count;
   g_runtime.pending_mission = true;
   g_runtime.pending = true;
+  g_runtime.plan_version++;
+  if (g_runtime.plan_version == 0U) {
+    g_runtime.plan_version = 1U;
+  }
+  reply_version = g_runtime.plan_version;
   k_mutex_unlock(&g_runtime.lock);
   return build_trajectory_reply(reply, capacity, reply_len,
-                                synapse_types_CommandResultCode_Accepted, 0);
+                                synapse_types_CommandResultCode_Accepted,
+                                reply_version, 0, 0U);
 }
 
 static bool runtime_query(const uint8_t *request, size_t request_len,
@@ -413,36 +508,50 @@ bool cubs2_runtime_control_init(FixedWingOuterLoopState *model) {
 
 void cubs2_runtime_control_apply(FixedWingOuterLoopState *model, bool armed) {
   ARG_UNUSED(armed);
-  if (model == NULL || !g_runtime.pending) {
+  if (model == NULL) {
     return;
   }
   k_mutex_lock(&g_runtime.lock, K_FOREVER);
+  if (!g_runtime.pending) {
+    k_mutex_unlock(&g_runtime.lock);
+    return;
+  }
   /* Apply the complete staged update at one controller-cycle boundary.  This
    * permits live in-flight tuning without allowing a model step to observe a
    * partially updated parameter set or route. */
   for (size_t i = 0U; i < ARRAY_SIZE(values); i++) {
     if (g_runtime.pending_value_set[i]) {
-      *(double *)((uint8_t *)model + values[i].live_offset) =
-          g_runtime.pending_values[i];
-      *(double *)((uint8_t *)model + values[i].mirror_offset) =
-          g_runtime.pending_values[i];
+      apply_value(model, i, g_runtime.pending_values[i]);
+      g_runtime.applied_values[i] = g_runtime.pending_values[i];
+      g_runtime.applied_value_set[i] = true;
       g_runtime.pending_value_set[i] = false;
     }
   }
   if (g_runtime.pending_mission) {
-    model->route_nSegments = (int32_t)g_runtime.pending_segments;
-    model->guidance_route_nSegments = (int32_t)g_runtime.pending_segments;
-    for (size_t row = 0U; row <= g_runtime.pending_segments; row++) {
-      for (size_t column = 0U; column < 3U; column++) {
-        model->route_waypoints[row][column] =
-            g_runtime.pending_waypoints[row][column];
-        model->guidance_route_waypoints[row][column] =
-            g_runtime.pending_waypoints[row][column];
-      }
-    }
+    apply_route(model, g_runtime.pending_waypoints, g_runtime.pending_segments);
+    memcpy(g_runtime.applied_waypoints, g_runtime.pending_waypoints,
+           sizeof(g_runtime.applied_waypoints));
+    g_runtime.applied_segments = g_runtime.pending_segments;
+    g_runtime.applied_mission = true;
     g_runtime.pending_mission = false;
-    g_runtime.plan_version++;
   }
   g_runtime.pending = false;
+  k_mutex_unlock(&g_runtime.lock);
+}
+
+void cubs2_runtime_control_restore(FixedWingOuterLoopState *model) {
+  if (model == NULL) {
+    return;
+  }
+
+  k_mutex_lock(&g_runtime.lock, K_FOREVER);
+  for (size_t i = 0U; i < ARRAY_SIZE(values); i++) {
+    if (g_runtime.applied_value_set[i]) {
+      apply_value(model, i, g_runtime.applied_values[i]);
+    }
+  }
+  if (g_runtime.applied_mission) {
+    apply_route(model, g_runtime.applied_waypoints, g_runtime.applied_segments);
+  }
   k_mutex_unlock(&g_runtime.lock);
 }
