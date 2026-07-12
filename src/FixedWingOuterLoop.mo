@@ -149,13 +149,13 @@ end GuidanceSetpoints;
 record RouteParameters
   Integer nSegments = 6 "flyable segments between route points";
   Real waypoints[7, 3] = [
-    0.0,   0.0, 0.0;
-    -8.0, -8.0, 3.0;
-    -8.0,  2.0, 3.0;
-    18.0,  2.0, 3.0;
-    18.0, -8.0, 3.0;
-    5.0,  -8.0, 3.0;
-    -8.0, -8.0, 3.0] "route point rows are [x, y, z] [m]";
+    0.0,  0.0, 0.0;
+    12.0, 0.0, 3.0;
+    30.0, 0.0, 3.0;
+    30.0, 20.0, 3.0;
+    0.0,  20.0, 3.0;
+    0.0,  0.0, 3.0;
+    12.0, 0.0, 3.0] "route starts along the +x runway; rows are [x, y, z] [m]";
   Real cruiseSpeed(unit = "m/s") = 4.5;
   Real altitudeToFlightPathGain = 2.0;
   Real altitudeLookaheadDistance(unit = "m") = 8.0;
@@ -164,7 +164,7 @@ record RouteParameters
   Real crossTrackSteeringDistance(unit = "m") = 4.25
     "atan steering distance; 45 deg correction occurs when |cross-track| = d";
   Real waypointSwitchingDistance(unit = "m") = 4.0
-    "switch when remaining along-track distance is within vehicle turn radius";
+    "advance when remaining along-track distance enters the endpoint guard";
 end RouteParameters;
 
 record TecsParameters
@@ -536,9 +536,8 @@ algorithm
       setpoints.acceleration :=
         route.speedToAccelerationGain * (setpoints.speed - estimate.speed);
 
-      // Waypoint advance is an along-track guard, not a radius guard. A radial
-      // guard can fail if the aircraft is offset from the path and induce tight
-      // circles near the waypoint.
+      // The endpoint guard is purely along track. Cross-track error must not
+      // turn waypoint switching into a capture-radius test.
       if remainingAlongTrackDistance < route.waypointSwitchingDistance then
         currentWaypoint :=
           if activeWaypoint >= route.nSegments then 1 else activeWaypoint + 1;

@@ -233,13 +233,10 @@ equation
 end FixedWingPlant;
 
 
-model FixedWingFBW "Cascaded attitude-hold fly-by-wire (outer attitude -> inner rate)"
-  // OUTER loop — the stick commands an attitude RATE that integrates into a
-  // held bank / pitch setpoint (rate-command, attitude-hold). Holding a key
-  // keeps rolling / pitching; releasing holds the new attitude. A proportional
-  // law on the setpoint error produces body-rate setpoints for the inner loop.
-  parameter Real roll_cmd_rate = 1.5 "Full-stick roll-setpoint rate [rad/s]";
-  parameter Real pitch_cmd_rate = 0.9 "Full-stick pitch-setpoint rate [rad/s]";
+model FixedWingFBW "Cascaded attitude-command fly-by-wire (stick attitude -> body rate)"
+  // SAFE-mode stick inputs command bounded bank and pitch attitudes directly.
+  // The CUBS2 outer loop relies on this contract: its normalized roll/pitch
+  // outputs are attitude requests, not rates to integrate indefinitely.
   parameter Real phi_sp_max = 0.90 "Bank setpoint limit [rad] (~52 deg)";
   parameter Real theta_sp_max = 0.45 "Pitch setpoint limit [rad] (~26 deg)";
   parameter Real yaw_rate_max = 1.0 "Full-stick commanded yaw rate [rad/s]";
@@ -295,10 +292,8 @@ protected
   Real i_q(start = 0, fixed = true);
   Real i_r(start = 0, fixed = true);
   Real i_p_c, i_q_c, i_r_c "Clamped integrator states";
-  Real phi_sp(start = 0, fixed = true) "Held bank setpoint [rad]";
-  Real theta_sp(start = 0, fixed = true) "Held pitch setpoint [rad]";
-  Real rate_phi "Commanded roll-setpoint rate [rad/s]";
-  Real rate_theta "Commanded pitch-setpoint rate [rad/s]";
+  Real phi_sp "Commanded bank setpoint [rad]";
+  Real theta_sp "Commanded pitch setpoint [rad]";
   Real climb_auth "Nose-up authority [0..1], faded near stall";
   Real theta_eff "Pitch setpoint after protective dive [rad]";
 
@@ -308,15 +303,14 @@ equation
   phi = atan2(up_body[2], up_body[3]);
   theta = atan2(up_body[1], up_body[3]);
 
-  // --- OUTER loop: rate-command into held setpoints, then setpoint error ->
-  //     body-rate setpoints. Nose-up rate fades near stall (so the setpoint
-  //     can't wind up nose-high); a protective dive overrides the pitch
-  //     setpoint when slow and releases itself once speed recovers.
+  // --- OUTER loop: direct attitude setpoints, then setpoint error -> body-rate
+  //     setpoints. Nose-up authority fades near stall; a protective dive
+  //     overrides the pitch setpoint when slow and releases after recovery.
   climb_auth = min(1, max(0, (airspeed - v_prot_lo)/(v_prot_hi - v_prot_lo)));
-  rate_phi = armed*stick_roll*roll_cmd_rate;
-  rate_theta = armed*noEvent(if stick_pitch > 0 then stick_pitch*pitch_cmd_rate*climb_auth else stick_pitch*pitch_cmd_rate);
-  der(phi_sp) = noEvent(if phi_sp > phi_sp_max then min(0, rate_phi) else if phi_sp < -phi_sp_max then max(0, rate_phi) else rate_phi);
-  der(theta_sp) = noEvent(if theta_sp > theta_sp_max then min(0, rate_theta) else if theta_sp < -theta_sp_max then max(0, rate_theta) else rate_theta);
+  phi_sp = armed*min(phi_sp_max, max(-phi_sp_max, stick_roll*phi_sp_max));
+  theta_sp = armed*min(theta_sp_max, max(-theta_sp_max,
+    noEvent(if stick_pitch > 0 then stick_pitch*theta_sp_max*climb_auth
+            else stick_pitch*theta_sp_max)));
 
   theta_eff = noEvent(if airspeed < v_prot_lo then min(theta_sp, -dive_slope*(v_prot_lo - airspeed)) else theta_sp);
 
