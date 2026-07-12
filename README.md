@@ -8,7 +8,7 @@ piloted aircraft.
 The board is an Ethernet/Zenoh control node:
 
 - subscribe to `manual`
-- subscribe to `odom`
+- subscribe to realtime `qualisys/cub1/pose_raw` or SIL `odom`
 - mirror inbound payloads from csyn into zros
 - run the Rumoca-generated fixed-wing eFMI controller from zros state
 - publish `pwm`
@@ -74,18 +74,11 @@ scenario settings. Python only normalizes traces for checks and plots. CI runs
 the flight SIL test through `nix run .#flight-sil-test` and uploads the
 generated CSV, PNG, Markdown, and HTML report artifacts.
 
-The pattern defaults to four waypoints. Its active length and coordinates are
-tunable simulation parameters backed by a fixed four-waypoint capacity, so a new
-flight plan does not recompile the model. Repeat `--waypoint x,y,z` once per
-active waypoint:
-
-```sh
-nix run .#flight-sil-test -- \
-  --waypoint 0,0,3 \
-  --waypoint 30,0,3 \
-  --waypoint 30,20,3 \
-  --waypoint 0,20,3
-```
+The pattern scenario uses the checked-in mission. When
+`CONFIG_CUBS2_RUNTIME_CONTROL=y`, deployed realtime, SIL, and FastDyn builds can
+stage a new mission at a control-cycle boundary via the `trajectory_set` Zenoh
+queryable service. This feature defaults on with CSyn Zenoh and is disabled
+automatically for network-free FastDyn profiles.
 
 Use separate build directories when switching boards:
 
@@ -94,6 +87,29 @@ west build -b mr_vmu_tropic -d build-mr_vmu_tropic cerebri_cubs2
 west build -b native_sim -d build-native_sim cerebri_cubs2
 west build -b native_sim/native/64 -d build-native_sim_native_64 cerebri_cubs2
 ```
+
+## Realtime and SIL native_sim builds
+
+`native_sim` has two mutually exclusive Kconfig execution modes. Realtime is
+the default; `boards/native_sim_sil.conf` selects `CONFIG_CUBS2_LOCKSTEP=y`:
+
+- **Realtime** (`build-native_sim`, the default config above): the flying
+  ground-side autopilot. The control loop paces itself on the wall clock,
+  subscribes to the Zenoh mocap pose key directly, and publishes mission
+  telemetry over the csyn bridge.
+- **Lockstep SIL** (`build-native_sim_sil`): the regression/simulation build.
+  It consumes external odometry (Zenoh bridge or the shared-memory lockstep
+  transport) and steps on simulation time:
+
+```sh
+west build -b native_sim -d build-native_sim_sil cerebri_cubs2 -- \
+  -DEXTRA_CONF_FILE=$PWD/cerebri_cubs2/boards/native_sim_sil.conf
+```
+
+`nix run .#build-native-sim` and `.#build-native-sim-64` produce the SIL
+flavor (into `build-native_sim_sil` and `build-native_sim_native_64_sil`),
+which is what CI tests and releases ship. Keep the two build directories
+separate so the flying binary can never inherit a SIL configuration.
 
 ## Nix Environment
 
@@ -145,7 +161,7 @@ reuse an existing native-sim executable:
 
 ```sh
 nix run .#native-sim-sil-run -- \
-  --sim build-native_sim/zephyr/zephyr.exe \
+  --sim build-native_sim_sil/zephyr/zephyr.exe \
   --artifacts artifacts/native-sim-lockstep \
   --lockstep-regression-only
 ```
@@ -180,3 +196,29 @@ For the 64-bit native simulator target, use:
 nix run .#build-native-sim-64
 nix run .#native-sim-64-sil-test
 ```
+
+## FastDyn execution modes
+
+The FastDyn base profile selects `CONFIG_CUBS2_LOCKSTEP=y`. It uses the direct
+shared-memory simulator transport and runs without Ethernet or Zenoh. To build
+the mutually exclusive realtime mode, append the checked-in configuration
+fragment after FastDyn's base profile:
+
+```sh
+base="$(realpath ../FastDyn/tests/integration/cerebri_cubs2_fastdyn.conf)"
+realtime="$(realpath boards/mr_vmu_tropic_fastdyn_realtime.conf)"
+overlay="$(realpath ../FastDyn/tests/integration/cerebri_cubs2_fastdyn.overlay)"
+
+CUBS2_BUILD_DIR="$PWD/build-mr_vmu_tropic-fastdyn-realtime" \
+  nix run .#build -- -p always -- \
+  "-DEXTRA_CONF_FILE=$base;$realtime" \
+  "-DDTC_OVERLAY_FILE=$overlay"
+```
+
+FastDyn runs QEMU with a virtual instruction-count clock, so its host FMI3
+bridge owns realtime pacing. Run a realtime image with
+`CUBS2_FASTDYN_SIM_SPEED=1`; accelerated lockstep keeps the default value.
+Both modes retain the same fixed-layout shared-memory ABI. Add FastDyn's
+communications profile when runtime `param_get`, `param_set`, and
+`trajectory_set` services are needed; `CONFIG_CUBS2_RUNTIME_CONTROL` then
+defaults on with `CONFIG_CSYN_ZENOH`.
