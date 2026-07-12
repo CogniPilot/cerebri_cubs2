@@ -138,12 +138,12 @@ EXTERNAL_ODOMETRY_VALID_FLAGS = (
 
 ROUTE_WAYPOINTS = [
     (0.0, 0.0, 0.0),
-    (-4.0, -5.0, 3.0),
-    (-3.0, 2.0, 3.0),
-    (16.20, 2.0, 3.0),
-    (16.0, -4.22, 3.0),
-    (6.88, -5.1, 3.0),
-    (-4.0, -5.0, 3.0),
+    (12.0, 0.0, 3.0),
+    (30.0, 0.0, 3.0),
+    (30.0, 20.0, 3.0),
+    (0.0, 20.0, 3.0),
+    (0.0, 0.0, 3.0),
+    (12.0, 0.0, 3.0),
 ]
 
 
@@ -934,7 +934,7 @@ def count_laps(rows: list[dict[str, float]]) -> int:
     previous = int(rows[0]["current_waypoint"]) if rows else 1
     for row in rows[1:]:
         current = int(row["current_waypoint"])
-        if previous >= 5 and current <= 2:
+        if previous == len(ROUTE_WAYPOINTS) - 1 and current == 1:
             laps += 1
         previous = current
     return laps
@@ -1224,7 +1224,7 @@ def run_checks(metrics: dict[str, float | int]) -> list[tuple[str, str, str]]:
         ("takeoff altitude", float(metrics["max_altitude_m"]) > 1.5, f"max {metrics['max_altitude_m']:.2f} m"),
         (
             "route laps",
-            warn_if(int(metrics["laps"]) >= 2),
+            int(metrics["laps"]) >= 1,
             f"{metrics['laps']} laps",
         ),
         (
@@ -1240,7 +1240,7 @@ def run_checks(metrics: dict[str, float | int]) -> list[tuple[str, str, str]]:
         ),
         (
             "crosstrack tracking",
-            warn_if(float(metrics["p95_abs_crosstrack_m"]) < 10.0),
+            float(metrics["p95_abs_crosstrack_m"]) < 15.0,
             f"p95 abs {metrics['p95_abs_crosstrack_m']:.2f} m",
         ),
         ("bank bounded", float(metrics["max_abs_bank_deg"]) < 80.0, f"max abs {metrics['max_abs_bank_deg']:.1f} deg"),
@@ -1311,7 +1311,7 @@ def write_reports(
             "",
             "The native app currently publishes `attitude_command` with roll and heading command plus thrust; pitch is not commanded there, so pitch tracking is plotted against that zero attitude-command pitch while elevator response is shown separately.",
             "",
-            "`WARN` rows are flight-quality metrics retained in the artifact report; CI gates only the native-SIL smoke contract, lockstep timing, transport, generated traces, and bounded-flight sanity checks.",
+            "CI gates transport, lockstep timing, exact route-lap completion, route tracking, generated traces, and bounded-flight checks; remaining `WARN` rows are diagnostic.",
             "",
             "Open `native-sim-report.html` or the PNG artifacts for the flight plots.",
             "",
