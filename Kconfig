@@ -5,32 +5,52 @@ menu "CUBS2"
 config CUBS2_FASTDYN
 	bool "Enable FastDyn hardware-target adapters"
 	default n
+	select CUBS2_SIM_TRANSPORT
 	help
 	  Retain the mr_vmu_tropic Cortex-M7 image, linker layout, Zephyr kernel,
 	  Ethernet driver, and CUBS2 application while bypassing physical-only
 	  board sequencing and analog clock setup during FastDyn/QEMU rehosting.
 
+choice CUBS2_EXECUTION_MODE
+	prompt "Controller execution mode"
+	default CUBS2_LOCKSTEP if CUBS2_FASTDYN
+	default CUBS2_REALTIME
+
 config CUBS2_REALTIME
-	bool "Realtime flight build (Zenoh mocap in, wall-clock control loop)"
-	depends on !CUBS2_FASTDYN
-	default y
+	bool "Realtime"
 	help
-	  Build the realtime autopilot: the control loop paces itself on the
-	  wall clock and consumes the direct Zenoh mocap pose stream, with
-	  mission telemetry published over the csyn bridge. Disable for the
-	  lockstep SIL build, which consumes odometry through the shared-memory
-	  transport and steps on simulation time. FastDyn always uses SIL mode.
+	  Pace the controller on wall time. Deployed and native_sim builds consume
+	  the direct Zenoh mocap pose stream. FastDyn consumes odometry through its
+	  direct shared-memory simulation transport; its host bridge owns wall-time
+	  pacing because Zephyr uptime is QEMU virtual time under FastDyn.
 
 config CUBS2_LOCKSTEP
-	bool "Enable deterministic lockstep"
-	depends on !CUBS2_REALTIME
+	bool "Deterministic lockstep"
 	depends on BOARD_NATIVE_SIM || CUBS2_FASTDYN
+	select CUBS2_SIM_TRANSPORT
+	help
+	  Advance the controller from simulator timestamps without wall-clock
+	  pacing. Generated synapse_fbs payload structs use direct shared memory;
+	  CSyn and ZROS may run concurrently as an independent side channel.
+
+endchoice
+
+config CUBS2_SIM_TRANSPORT
+	bool
 	select CEREBRI_LOCKSTEP
+	help
+	  Internal direct shared-memory transport used by native_sim lockstep and
+	  both FastDyn execution modes.
+
+config CUBS2_RUNTIME_CONTROL
+	bool "Enable Zenoh runtime configuration services"
+	depends on CSYN_ZENOH
 	default y
 	help
-	  Exchange generated synapse_fbs payload structs through direct shared
-	  memory. CSyn and ZROS may run concurrently for Ethernet communication,
-	  but neither transport participates in the lockstep hot path.
+	  Register param_get, param_set, and trajectory_set queryable services.
+	  Updates are staged by the Zenoh thread and applied at a controller-cycle
+	  boundary. Network-free FastDyn builds leave this disabled automatically;
+	  enabling the Zenoh side channel makes the services available again.
 
 config CUBS2_MANUAL_OVERRIDE
 	bool "Select manual or autonomous RC output from incoming RC switch"

@@ -25,7 +25,7 @@ set(ZEPHYR_MODULES
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(cubs2 LANGUAGES C)
 
-if(TARGET native_simulator AND CONFIG_CUBS2_LOCKSTEP)
+if(TARGET native_simulator AND CONFIG_CUBS2_SIM_TRANSPORT)
   target_sources(native_simulator INTERFACE subsys/lockstep/lockstep_host.c)
 endif()
 
