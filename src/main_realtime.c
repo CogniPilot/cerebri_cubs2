@@ -27,13 +27,9 @@ LOG_MODULE_REGISTER(cubs2, LOG_LEVEL_INF);
 
 #define CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS 20000000
 #define CUBS2_CONTROL_PERIOD_US (CUBS2_FIXED_WING_OUTER_LOOP_PERIOD_NS / 1000U)
+#define CUBS2_MOCAP_FRESHNESS_MS 100U
+#define CUBS2_QUATERNION_NORM_TOLERANCE 0.1f
 
-/* Producer-defined VehicleCommand id broadcasting one local-frame mission item:
- * arg0 = item seq (0-based), arg1 = total items, arg2..4 = ENU east/north/up in
- * meters, arg5 = mission_id. Items cycle so the ground station can rebuild the
- * full plan from any join point.
- */
-#define CUBS2_CMD_MISSION_ITEM_LOCAL 32001U
 #define CUBS2_MISSION_BROADCAST_PERIOD                                         \
   10U /* control loops per item, 50 Hz / 10 = 5 Hz */
 #define CUBS2_MISSION_ID 1U
@@ -53,11 +49,13 @@ struct control_context {
   synapse_topic_ControlLoopMetricsData_t control_loop_metrics;
   synapse_topic_MissionProgressData_t mission_progress;
   synapse_topic_LocalPositionCommandData_t local_position_command;
-  struct csyn_vehicle_command vehicle_command;
+  synapse_topic_TrajectorySegmentData_t trajectory_segment;
   synapse_topic_NavigationTargetData_t navigation_target;
   uint32_t mission_broadcast_countdown;
   uint16_t mission_broadcast_seq;
   uint32_t mocap_generation;
+  int64_t mocap_last_update_ms;
+  uint32_t estimator_control_steps;
   uint32_t manual_generation;
   uint32_t main_loop_us;
   bool previous_auto_mode;
@@ -73,7 +71,7 @@ static struct zros_pub g_attitude_command_pub;
 static struct zros_pub g_control_loop_metrics_pub;
 static struct zros_pub g_mission_progress_pub;
 static struct zros_pub g_local_position_command_pub;
-static struct zros_pub g_vehicle_command_pub;
+static struct zros_pub g_trajectory_segment_pub;
 static struct zros_pub g_navigation_target_pub;
 
 /* Mocap: RawPose subscribed directly on the deployment key; csyn enforces
@@ -146,7 +144,16 @@ static bool read_mocap_if_updated(struct control_context *ctx) {
     finite = finite && isfinite(values[i]);
   }
 
+  const float quaternion_norm_squared =
+      values[3] * values[3] + values[4] * values[4] +
+      values[5] * values[5] + values[6] * values[6];
+  const bool quaternion_valid =
+      finite &&
+      fabsf(quaternion_norm_squared - 1.0f) <=
+          CUBS2_QUATERNION_NORM_TOLERANCE;
+
   ctx->mocap_generation = generation;
+  ctx->mocap_last_update_ms = k_uptime_get();
   ctx->mocap = (struct csyn_mocap_rigid_body){
       .x = values[0],
       .y = values[1],
@@ -155,11 +162,49 @@ static bool read_mocap_if_updated(struct control_context *ctx) {
       .qx = values[4],
       .qy = values[5],
       .qz = values[6],
-      .valid = finite,
+      .valid = finite && quaternion_valid,
   };
   return true;
 }
+
+static bool mocap_measurement_fresh(const struct control_context *ctx) {
+  const int64_t age_ms = k_uptime_get() - ctx->mocap_last_update_ms;
+
+  return ctx->mocap.valid && ctx->mocap_generation != 0U && age_ms >= 0 &&
+         age_ms <= CUBS2_MOCAP_FRESHNESS_MS;
+}
 #endif
+
+static bool model_stale_failsafe_active(void) {
+  return g_model.airborne &&
+         (double)g_model.estimator_heldSamples * g_model.dt >
+             g_model.attitudeParams_staleFailsafeTime;
+}
+
+static uint8_t attitude_estimate_flags(const struct control_context *ctx) {
+  const bool attitude_finite =
+      isfinite(g_model.euler_rad[0]) && isfinite(g_model.euler_rad[1]) &&
+      isfinite(g_model.euler_rad[2]);
+  const bool rates_finite = isfinite(g_model.eulerRateEstimate_rad_s[0]) &&
+                            isfinite(g_model.eulerRateEstimate_rad_s[1]) &&
+                            isfinite(g_model.eulerRateEstimate_rad_s[2]);
+#if defined(CONFIG_CUBS2_FASTDYN)
+  const bool measurement_fresh = ctx->mocap.valid;
+#else
+  const bool measurement_fresh = mocap_measurement_fresh(ctx);
+#endif
+  uint8_t flags = 0U;
+
+  if (measurement_fresh && ctx->estimator_control_steps >= 1U &&
+      attitude_finite) {
+    flags |= synapse_topic_AttitudeEstimateFlags_AttitudeValid;
+  }
+  if (measurement_fresh && ctx->estimator_control_steps >= 2U && rates_finite) {
+    flags |= synapse_topic_AttitudeEstimateFlags_RatesValid;
+  }
+
+  return flags;
+}
 
 static bool read_manual_if_updated(struct control_context *ctx) {
 #if defined(CONFIG_CSYN_ZROS_BRIDGE)
@@ -286,8 +331,8 @@ static int control_pubs_init(void) {
        &g_control_ctx.mission_progress},
       {&g_local_position_command_pub, &topic_local_position_command,
        &g_control_ctx.local_position_command},
-      {&g_vehicle_command_pub, &topic_vehicle_command,
-       &g_control_ctx.vehicle_command},
+      {&g_trajectory_segment_pub, &topic_trajectory_segment,
+       &g_control_ctx.trajectory_segment},
       {&g_navigation_target_pub, &topic_navigation_target,
        &g_control_ctx.navigation_target},
   };
@@ -365,20 +410,35 @@ static void update_mission_telemetry(struct control_context *ctx,
     ctx->mission_broadcast_seq = 0U;
   }
 
-  ctx->vehicle_command = (struct csyn_vehicle_command){
-      .timestamp_us = now_us,
-      .arg0 = (float)ctx->mission_broadcast_seq,
-      .arg1 = (float)total,
-      .arg2 =
-          (float)g_model.route_waypoints[ctx->mission_broadcast_seq + 1U][0],
-      .arg3 =
-          (float)g_model.route_waypoints[ctx->mission_broadcast_seq + 1U][1],
-      .arg4 =
-          (float)g_model.route_waypoints[ctx->mission_broadcast_seq + 1U][2],
-      .arg5 = (float)CUBS2_MISSION_ID,
-      .command_id = CUBS2_CMD_MISSION_ITEM_LOCAL,
+  const synapse_types_Vec3f_t waypoint = {
+      .x = (float)g_model.route_waypoints[ctx->mission_broadcast_seq + 1U][0],
+      .y = (float)g_model.route_waypoints[ctx->mission_broadcast_seq + 1U][1],
+      .z = (float)g_model.route_waypoints[ctx->mission_broadcast_seq + 1U][2],
   };
-  (void)zros_pub_update(&g_vehicle_command_pub);
+  uint16_t segment_flags = 0U;
+
+  if (ctx->mission_broadcast_seq == 0U) {
+    segment_flags |= synapse_topic_TrajectorySegmentFlags_Start;
+  }
+  if (ctx->mission_broadcast_seq + 1U == total) {
+    segment_flags |= synapse_topic_TrajectorySegmentFlags_Final;
+  }
+
+  ctx->trajectory_segment = (synapse_topic_TrajectorySegmentData_t){
+      .timestamp_us = now_us,
+      .p0_enu_m = waypoint,
+      .p1_enu_m = waypoint,
+      .p2_enu_m = waypoint,
+      .p3_enu_m = waypoint,
+      .trajectory_id = CUBS2_MISSION_ID,
+      .segment_seq = ctx->mission_broadcast_seq,
+      .plan_version = CUBS2_MISSION_ID,
+      .flags = segment_flags,
+      .trajectory_type = synapse_topic_TrajectoryType_Bezier,
+      .degree = synapse_topic_TrajectoryDegree_Cubic,
+      .frame = synapse_types_LocalFrame_LocalEnu,
+  };
+  (void)zros_pub_update(&g_trajectory_segment_pub);
   ctx->mission_broadcast_seq++;
 }
 
@@ -430,16 +490,23 @@ static void update_navigation_target(struct control_context *ctx,
 static void update_telemetry(struct control_context *ctx, bool auto_mode,
                              uint64_t now_us) {
   bool armed = !ctx->manual.valid || ctx->manual.rc.ch6 >= 1500;
+  uint8_t health_flags =
+      armed ? synapse_topic_VehicleHealthFlags_Armed : 0U;
+
+  if (auto_mode && (!ctx->mocap.valid || model_stale_failsafe_active())) {
+    health_flags |= synapse_topic_VehicleHealthFlags_Failsafe;
+  }
 
   ctx->vehicle_health = (synapse_topic_VehicleHealthData_t){
       .timestamp_us = now_us,
       .flight_mode = auto_mode ? 1U : 0U,
       .link_quality_pct = ctx->manual.valid ? 100U : 0U,
-      .flags = armed ? synapse_topic_VehicleHealthFlags_Armed : 0U,
+      .flags = health_flags,
   };
 
   ctx->attitude_estimate = (synapse_topic_AttitudeEstimateData_t){
       .timestamp_us = now_us,
+      .flags = attitude_estimate_flags(ctx),
       .angular_velocity_flu_rad_s =
           {
               .roll = (float)g_model.eulerRateEstimate_rad_s[0],
@@ -552,12 +619,21 @@ int main(void) {
     cubs2_runtime_control_apply(&g_model, !ctx->manual.valid ||
                                               ctx->manual.rc.ch6 >= 1500);
 
-    /* The estimator stays warm while manual. FastDyn receives plant samples
-     * at 100 Hz but preserves the model's 50 Hz fixed step. */
+    /* The estimator stays warm while manual. In real time, keep running with
+     * the last usable pose during a transport gap: repeated samples are how
+     * the estimator holds its state, counts the gap, and enters its airborne
+     * stale-pose failsafe after attitudeParams.staleFailsafeTime. FastDyn
+     * receives plant samples at 100 Hz but preserves the model's 50 Hz fixed
+     * step. */
     if (step_control && ctx->mocap.valid) {
       fixed_wing_map_input(&g_model, &ctx->mocap);
       g_model.engaged = auto_mode ? 1.0 : 0.0;
       EFMI_STEP(FixedWingOuterLoop, &g_model);
+      if (ctx->estimator_control_steps < UINT32_MAX) {
+        ctx->estimator_control_steps++;
+      }
+    } else if (!ctx->mocap.valid) {
+      ctx->estimator_control_steps = 0U;
     }
 
     if (auto_mode) {

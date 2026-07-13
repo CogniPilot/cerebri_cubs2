@@ -32,6 +32,8 @@ CSYN_TOPIC_DEFINE(mission, "mission", CSYN_DIR_TX,
                   sizeof(synapse_topic_MissionProgressData_t));
 CSYN_TOPIC_DEFINE(pos_sp, "pos_sp", CSYN_DIR_TX,
                   sizeof(synapse_topic_LocalPositionCommandData_t));
+CSYN_TOPIC_DEFINE(traj, "traj", CSYN_DIR_TX,
+                  sizeof(synapse_topic_TrajectorySegmentData_t));
 CSYN_TOPIC_DEFINE(nav, "nav", CSYN_DIR_TX,
                   sizeof(synapse_topic_NavigationTargetData_t));
 #endif

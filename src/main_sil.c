@@ -10,6 +10,7 @@
 #include "lockstep.h"
 #include "runtime_control.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -38,6 +39,7 @@ struct control_context {
   uint32_t main_loop_us;
   uint64_t lockstep_time_us;
   uint64_t next_control_time_us;
+  uint32_t estimator_control_steps;
   bool lockstep_time_valid;
   bool previous_auto_mode;
 };
@@ -225,19 +227,47 @@ static bool control_step_due(struct control_context *ctx) {
   return true;
 }
 
+static uint8_t attitude_estimate_flags(const struct control_context *ctx,
+                                       bool odometry_ok) {
+  const bool attitude_finite =
+      isfinite(g_model.euler_rad[0]) && isfinite(g_model.euler_rad[1]) &&
+      isfinite(g_model.euler_rad[2]);
+  const bool rates_finite = isfinite(g_model.eulerRateEstimate_rad_s[0]) &&
+                            isfinite(g_model.eulerRateEstimate_rad_s[1]) &&
+                            isfinite(g_model.eulerRateEstimate_rad_s[2]);
+  uint8_t flags = 0U;
+
+  if (odometry_ok && ctx->estimator_control_steps >= 1U && attitude_finite) {
+    flags |= synapse_topic_AttitudeEstimateFlags_AttitudeValid;
+  }
+  if (odometry_ok && ctx->estimator_control_steps >= 2U && rates_finite) {
+    flags |= synapse_topic_AttitudeEstimateFlags_RatesValid;
+  }
+
+  return flags;
+}
+
 static void update_telemetry(struct control_context *ctx, bool auto_mode,
                              uint64_t timestamp_us) {
   bool armed = !ctx->manual.valid || ctx->manual.rc.ch6 >= 1500;
+  bool odometry_ok = odometry_valid(&ctx->odometry);
+  uint8_t health_flags =
+      armed ? synapse_topic_VehicleHealthFlags_Armed : 0U;
+
+  if (auto_mode && !odometry_ok) {
+    health_flags |= synapse_topic_VehicleHealthFlags_Failsafe;
+  }
 
   ctx->vehicle_health = (synapse_topic_VehicleHealthData_t){
       .timestamp_us = timestamp_us,
       .flight_mode = auto_mode ? 1U : 0U,
       .link_quality_pct = ctx->manual.valid ? 100U : 0U,
-      .flags = armed ? synapse_topic_VehicleHealthFlags_Armed : 0U,
+      .flags = health_flags,
   };
 
   ctx->attitude_estimate = (synapse_topic_AttitudeEstimateData_t){
       .timestamp_us = timestamp_us,
+      .flags = attitude_estimate_flags(ctx, odometry_ok),
       .angular_velocity_flu_rad_s =
           {
               .roll = (float)g_model.eulerRateEstimate_rad_s[0],
@@ -305,6 +335,7 @@ int main(void) {
     uint32_t start_cycles = k_cycle_get_32();
     csyn_rc_channels16_t auto_rc = {0};
     bool odometry_updated;
+    bool odometry_ok;
     bool auto_mode;
     bool step_control;
 
@@ -335,20 +366,26 @@ int main(void) {
       EFMI_INIT(FixedWingOuterLoop, &g_model);
       EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
       cubs2_runtime_control_restore(&g_model);
+      ctx->estimator_control_steps = 0U;
     }
     ctx->previous_auto_mode = auto_mode;
     cubs2_runtime_control_apply(&g_model, !ctx->manual.valid ||
                                               ctx->manual.rc.ch6 >= 1500);
     step_control = control_step_due(ctx);
+    odometry_ok = odometry_valid(&ctx->odometry);
 
     if (auto_mode) {
-      if (step_control && odometry_valid(&ctx->odometry)) {
+      if (step_control && odometry_ok) {
         fixed_wing_map_input(&g_model, &ctx->odometry);
         g_model.engaged = 1.0;
         EFMI_STEP(FixedWingOuterLoop, &g_model);
+        if (ctx->estimator_control_steps < UINT32_MAX) {
+          ctx->estimator_control_steps++;
+        }
         fixed_wing_map_output(&g_model, &auto_rc);
         ctx->control_rc = auto_rc;
-      } else if (!odometry_valid(&ctx->odometry)) {
+      } else if (!odometry_ok) {
+        ctx->estimator_control_steps = 0U;
         idle_output(&auto_rc);
         ctx->control_rc = auto_rc;
       }

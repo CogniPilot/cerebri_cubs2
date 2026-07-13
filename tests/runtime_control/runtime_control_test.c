@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -77,6 +78,17 @@ static size_t build_param_set(uint8_t *request, const char *name,
   return finish_request(&builder, request);
 }
 
+static size_t build_param_get(uint8_t *request, const char *name) {
+  flatcc_builder_t builder;
+
+  assert(flatcc_builder_init(&builder) == 0);
+  assert(synapse_cmd_ParamGetRequest_start_as_root(&builder) == 0);
+  assert(synapse_cmd_ParamGetRequest_name_create_str(&builder, name) == 0);
+  assert(synapse_cmd_ParamGetRequest_limit_add(&builder, 1U) == 0);
+  assert(synapse_cmd_ParamGetRequest_end_as_root(&builder) != 0);
+  return finish_request(&builder, request);
+}
+
 static synapse_topic_TrajectorySegmentData_t make_segment(uint32_t sequence,
                                                           float base) {
   return (synapse_topic_TrajectorySegmentData_t){
@@ -123,6 +135,30 @@ trajectory_reply(const uint8_t *reply, size_t reply_len) {
   return synapse_cmd_TrajectorySetReply_as_root(reply);
 }
 
+static synapse_types_CommandResultCode_enum_t
+param_set_result(const uint8_t *reply, size_t reply_len) {
+  synapse_cmd_ParamSetReply_table_t result;
+
+  assert(synapse_cmd_ParamSetReply_verify_as_root(reply, reply_len) == 0);
+  result = synapse_cmd_ParamSetReply_as_root(reply);
+  return synapse_cmd_ParamSetReply_result(result);
+}
+
+static double param_get_value(const uint8_t *reply, size_t reply_len) {
+  synapse_cmd_ParamGetReply_table_t result;
+  synapse_cmd_ParamValue_vec_t values;
+
+  assert(synapse_cmd_ParamGetReply_verify_as_root(reply, reply_len) == 0);
+  result = synapse_cmd_ParamGetReply_as_root(reply);
+  assert(synapse_cmd_ParamGetReply_result(result) ==
+         synapse_types_CommandResultCode_Accepted);
+  values = synapse_cmd_ParamGetReply_values(result);
+  assert(values != NULL);
+  assert(synapse_cmd_ParamValue_vec_len(values) == 1U);
+  return synapse_cmd_ParamValue_float_value(
+      synapse_cmd_ParamValue_vec_at(values, 0U));
+}
+
 static void test_malformed_requests(void) {
   const uint8_t malformed[8] = {0xfc, 0xff, 0xff, 0x7f, 0, 0, 0, 0};
   const char *keys[] = {"cmd/param_set", "cmd/param_get", "cmd/trajectory_set"};
@@ -149,6 +185,55 @@ static void test_parameter_restore(FixedWingOuterLoopState *model) {
   cubs2_runtime_control_restore(model);
   assert(model->route_cruiseSpeed == 7.25);
   assert(model->guidance_route_cruiseSpeed == 7.25);
+}
+
+static void test_trusted_parameter_policy(FixedWingOuterLoopState *model) {
+  uint8_t request[REQUEST_CAPACITY];
+  uint8_t reply[REQUEST_CAPACITY];
+  size_t request_len = build_param_set(request, "route.cruiseSpeed", 12.5);
+  size_t reply_len = query("cmd/param_set", request, request_len, reply);
+
+  assert(param_set_result(reply, reply_len) ==
+         synapse_types_CommandResultCode_Accepted);
+  cubs2_runtime_control_apply(model, true);
+  assert(model->route_cruiseSpeed == 12.5);
+
+  request_len = build_param_set(request, "route.cruiseSpeed", NAN);
+  reply_len = query("cmd/param_set", request, request_len, reply);
+  assert(param_set_result(reply, reply_len) ==
+         synapse_types_CommandResultCode_Denied);
+  cubs2_runtime_control_apply(model, true);
+  assert(model->route_cruiseSpeed == 12.5);
+}
+
+struct refresh_stress_context {
+  size_t iterations;
+};
+
+static void *refresh_stress_thread(void *arg) {
+  const struct refresh_stress_context *ctx = arg;
+
+  for (size_t i = 0U; i < ctx->iterations; i++) {
+    uint8_t request[REQUEST_CAPACITY];
+    uint8_t reply[REQUEST_CAPACITY];
+    size_t request_len = build_param_get(request, "velocity.setpoint");
+    size_t reply_len = query("cmd/param_get", request, request_len, reply);
+
+    assert(isfinite(param_get_value(reply, reply_len)));
+  }
+  return NULL;
+}
+
+static void test_parameter_refresh_concurrency(FixedWingOuterLoopState *model) {
+  const struct refresh_stress_context ctx = {.iterations = 2000U};
+  pthread_t thread;
+
+  assert(pthread_create(&thread, NULL, refresh_stress_thread, (void *)&ctx) ==
+         0);
+  for (size_t i = 0U; i < ctx.iterations; i++) {
+    cubs2_runtime_control_apply(model, true);
+  }
+  assert(pthread_join(thread, NULL) == 0);
 }
 
 static uint32_t
@@ -243,6 +328,8 @@ int main(void) {
 
   test_malformed_requests();
   test_parameter_restore(&model);
+  test_trusted_parameter_policy(&model);
+  test_parameter_refresh_concurrency(&model);
   test_trajectory_transactions(&model);
   puts("runtime_control tests passed");
   return EXIT_SUCCESS;

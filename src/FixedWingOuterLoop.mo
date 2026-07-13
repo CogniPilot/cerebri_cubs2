@@ -149,13 +149,13 @@ end GuidanceSetpoints;
 record RouteParameters
   Integer nSegments = 6 "flyable segments between route points";
   Real waypoints[7, 3] = [
-    0.0,  0.0, 0.0;
-    12.0, 0.0, 3.0;
-    30.0, 0.0, 3.0;
-    30.0, 20.0, 3.0;
-    0.0,  20.0, 3.0;
-    0.0,  0.0, 3.0;
-    12.0, 0.0, 3.0] "route starts along the +x runway; rows are [x, y, z] [m]";
+    0.0,   0.0, 0.0;
+    -8.0, -8.0, 3.0;
+    -8.0,  2.0, 3.0;
+    18.0,  2.0, 3.0;
+    18.0, -8.0, 3.0;
+    5.0,  -8.0, 3.0;
+    -8.0, -8.0, 3.0] "route point rows are [x, y, z] [m]";
   Real cruiseSpeed(unit = "m/s") = 4.5;
   Real altitudeToFlightPathGain = 2.0;
   Real altitudeLookaheadDistance(unit = "m") = 8.0;
@@ -519,31 +519,26 @@ algorithm
     steeringCorrection :=
       atan2(-crossTrackError, max(route.crossTrackSteeringDistance, 1e-6));
 
-    if not airborne then
-      currentWaypoint := activeWaypoint;
-      setpoints.speed := 0.0;
-      setpoints.flightPathAngle := 0.0;
-      setpoints.heading := 0.0;
-      setpoints.acceleration := 0.0;
-    else
-      setpoints.speed := route.cruiseSpeed;
-      setpoints.flightPathAngle :=
-        clip(atan2(route.altitudeToFlightPathGain * altitudeError,
-                   max(route.altitudeLookaheadDistance, 1e-6)),
-             -route.flightPathAngleLimit,
-             route.flightPathAngleLimit);
-      setpoints.heading := wrapAngle(segmentHeading + steeringCorrection);
-      setpoints.acceleration :=
-        route.speedToAccelerationGain * (setpoints.speed - estimate.speed);
+    // Guidance remains live during the ground roll so the same TECS energy
+    // controller used in flight can accelerate and throttle the takeoff. Keep
+    // waypoint advancement inhibited until airborne.
+    setpoints.speed := route.cruiseSpeed;
+    setpoints.flightPathAngle :=
+      clip(atan2(route.altitudeToFlightPathGain * altitudeError,
+                 max(route.altitudeLookaheadDistance, 1e-6)),
+           -route.flightPathAngleLimit,
+           route.flightPathAngleLimit);
+    setpoints.heading := wrapAngle(segmentHeading + steeringCorrection);
+    setpoints.acceleration :=
+      route.speedToAccelerationGain * (setpoints.speed - estimate.speed);
 
-      // The endpoint guard is purely along track. Cross-track error must not
-      // turn waypoint switching into a capture-radius test.
-      if remainingAlongTrackDistance < route.waypointSwitchingDistance then
-        currentWaypoint :=
-          if activeWaypoint >= route.nSegments then 1 else activeWaypoint + 1;
-      else
-        currentWaypoint := activeWaypoint;
-      end if;
+    // The endpoint guard is purely along track. Cross-track error must not
+    // turn waypoint switching into a capture-radius test.
+    if airborne and remainingAlongTrackDistance < route.waypointSwitchingDistance then
+      currentWaypoint :=
+        if activeWaypoint >= route.nSegments then 1 else activeWaypoint + 1;
+    else
+      currentWaypoint := activeWaypoint;
     end if;
   end when;
 end RouteGuidance;
@@ -738,7 +733,7 @@ protected
 algorithm
   when sample(0.0, dt) then
     if not airborne then
-      throttle := 1.0;
+      throttle := clip(tecsThrustCommand / vehicle.thrustMax, 0.0, 1.0);
       elevator := params.takeoffElevator;
       aileron := 0.0;
       rudder := 0.0;
@@ -758,9 +753,9 @@ algorithm
       pitchController.derivativeInput := 0.0;
       pitchController.feedforward := 0.0;
     elseif climbout then
-      // Fixed-pitch full-throttle climb absorbs takeoff excess energy; TECS
-      // takes over at climboutAltitude. Guidance steers, bank clamped gentle.
-      throttle := 1.0;
+      // Keep the fixed-pitch climb and gentle bank limit, but use TECS for
+      // total-energy/throttle control from the ground roll onward.
+      throttle := clip(tecsThrustCommand / vehicle.thrustMax, 0.0, 1.0);
       rudder := 0.0;
 
       course := atan2(estimate.velocity_m_s[2], estimate.velocity_m_s[1]);
@@ -921,7 +916,7 @@ algorithm
     guidance.airborne := airborne;
     guidance.estimate := estimator.estimate;
 
-    tecs.enabled := airborne and climboutDone and engaged > 0.5;
+    tecs.enabled := engaged > 0.5;
     tecs.setpoints := guidance.setpoints;
     tecs.flightPathAngleEstimate := estimator.estimate.flightPathAngle;
     tecs.accelerationEstimate_m_s2 := estimator.estimate.acceleration_m_s2;
