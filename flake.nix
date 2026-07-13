@@ -423,6 +423,32 @@
               tail -n "''${CUBS2_LOG_TAIL_LINES:-200}" "$log_file" >&2 || true
               return "$rc"
             }
+
+            zephyr_app_native_sim_build() {
+              local board="$1"
+              local build_dir="$2"
+              local app="$3"
+              shift 3
+              local arg
+              local in_cmake_args=0
+              local -a west_args=()
+              local -a cmake_args=(
+                "-DEXTRA_CONF_FILE=$app/boards/native_sim_sil.conf"
+              )
+
+              for arg in "$@"; do
+                if [ "$arg" = "--" ]; then
+                  in_cmake_args=1
+                elif [ "$in_cmake_args" -eq 1 ]; then
+                  cmake_args+=("$arg")
+                else
+                  west_args+=("$arg")
+                fi
+              done
+
+              west build -b "$board" -d "$build_dir" "$app" \
+                "''${west_args[@]}" -- "''${cmake_args[@]}"
+            }
           '';
 
           mkWestApp =
@@ -468,8 +494,7 @@
 
             cd "$workspace"
             zephyr_app_run_logged "$build_dir/west-build.log" \
-              west build -b "$board" -d "$build_dir" "$app" "$@" -- \
-              -DEXTRA_CONF_FILE="$app/boards/native_sim_sil.conf"
+              zephyr_app_native_sim_build "$board" "$build_dir" "$app" "$@"
           '';
 
           cubs2-build-native-sim-64 = mkWestApp "cubs2-build-native-sim-64" [ ] ''
@@ -488,8 +513,7 @@
 
             cd "$workspace"
             zephyr_app_run_logged "$build_dir/west-build.log" \
-              west build -b "$board" -d "$build_dir" "$app" "$@" -- \
-              -DEXTRA_CONF_FILE="$app/boards/native_sim_sil.conf"
+              zephyr_app_native_sim_build "$board" "$build_dir" "$app" "$@"
           '';
 
           cubs2-flash = mkWestApp "cubs2-flash" [ ] ''
