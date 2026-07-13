@@ -66,7 +66,6 @@ def catalog_encoding(topic_name):
 
 DEFAULT_SCENARIO = ROOT / "tests" / "zephyr" / "rumoca-scenario.native-sim.toml"
 DEFAULT_T_END = 40.0
-SYNAPSE_BFBS_RELATIVE = Path("_deps") / "synapse_fbs_c-src" / "bfbs" / "all.bfbs"
 RUMOCA_SCENARIO_CHECK_CODE = (
     "import rumoca as rum; "
     "runner = getattr(rum.Session(), 'run_scenario', None); "
@@ -402,7 +401,7 @@ def build_fmi3_runner(
     artifact_dir: Path, sim: Path, artifact: Fmi3Artifact, log_path: Path
 ) -> Path:
     source = ROOT / "tests" / "zephyr" / "fmi3_lockstep_runner.c"
-    synapse_include = sim.parent.parent / "_deps" / "synapse_fbs_c-src" / "include"
+    synapse_include = synapse_c_root_for_sim(sim) / "include"
     if not synapse_include.exists():
         raise FileNotFoundError(f"Synapse C headers not found: {synapse_include}")
     function_types = artifact.source_dir / "fmi3FunctionTypes.h"
@@ -468,13 +467,21 @@ def open_zenoh_session(locator: str, timeout_s: float) -> zenoh.Session:
     raise RuntimeError(f"could not open Zenoh session to {locator}: {last_error}")
 
 
+def synapse_c_root_for_sim(sim: Path) -> Path:
+    configured = os.environ.get("CUBS2_SYNAPSE_C_ROOT")
+    if configured:
+        root = Path(configured).expanduser()
+        return root if root.is_absolute() else ROOT / root
+    return sim.parent.parent / "_deps" / "synapse_fbs_c-src"
+
+
 def synapse_bfbs_for_sim(sim: Path) -> Path:
-    build_dir = sim.parent.parent
-    bfbs = build_dir / SYNAPSE_BFBS_RELATIVE
+    bfbs = synapse_c_root_for_sim(sim) / "bfbs" / "all.bfbs"
     if not bfbs.exists():
         raise FileNotFoundError(
             f"Synapse schema BFBS not found: {bfbs}\n"
-            "Build the native_sim target first so csyn can unpack the pinned synapse_fbs release."
+            "Generate the workspace Synapse packages or build native_sim so csyn can "
+            "unpack the pinned synapse_fbs release."
         )
     return bfbs
 

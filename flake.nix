@@ -700,6 +700,17 @@
 
               app="$(find_app)"
               cd "$app"
+              rumoca_python="''${CUBS2_RUMOCA_PYTHON:-}"
+              if [ -n "$rumoca_python" ]; then
+                if [ ! -x "$rumoca_python" ]; then
+                  printf 'error: CUBS2_RUMOCA_PYTHON is not executable: %s\n' \
+                    "$rumoca_python" >&2
+                  exit 1
+                fi
+                rumoca_site="$("$rumoca_python" -c \
+                  'import pathlib, rumoca; print(pathlib.Path(rumoca.__file__).resolve().parent.parent)')"
+                export PYTHONPATH="$rumoca_site''${PYTHONPATH:+:$PYTHONPATH}"
+              fi
               exec "${nativeSimSilPythonEnv}/bin/python" \
                 tests/zephyr/run_native_sim_zenoh_sil.py "$@"
             '';

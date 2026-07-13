@@ -1,6 +1,6 @@
 // 6-DOF fixed-wing SIL plant + fly-by-wire controller.
 //
-// Built on the shared CMM RigidBody / LieGroup packages, exactly like the
+// Built on the shared CMM RigidBody / LieGroups packages, exactly like the
 // quadrotor example, so the two share the validated rigid-body integrator.
 //
 //   World frame : Z-up

@@ -29,7 +29,7 @@ end nativeSilThrottlePwmToStick;
 
 model Cubs2NativeSimSIL
   // Keep transitive CMM base packages visible to Rumoca source-root loading.
-  import LieGroup;
+  import LieGroups;
   import RigidBody;
 
   SportCubPlant vehicle;
@@ -130,7 +130,8 @@ equation
   airspeed_m_s = vehicle.airspeed;
   roll_rad = atan2(
     2.0 * (vehicle.quat[1] * vehicle.quat[2] + vehicle.quat[3] * vehicle.quat[4]),
-    1.0 - 2.0 * (vehicle.quat[2] ^ 2 + vehicle.quat[3] ^ 2)
+    1.0 - 2.0 * (vehicle.quat[2] * vehicle.quat[2]
+      + vehicle.quat[3] * vehicle.quat[3])
   );
   pitch_rad = asin(nativeSilClip(
     2.0 * (vehicle.quat[1] * vehicle.quat[3] - vehicle.quat[4] * vehicle.quat[2]),
@@ -139,7 +140,8 @@ equation
   ));
   yaw_rad = atan2(
     2.0 * (vehicle.quat[1] * vehicle.quat[4] + vehicle.quat[2] * vehicle.quat[3]),
-    1.0 - 2.0 * (vehicle.quat[3] ^ 2 + vehicle.quat[4] ^ 2)
+    1.0 - 2.0 * (vehicle.quat[3] * vehicle.quat[3]
+      + vehicle.quat[4] * vehicle.quat[4])
   );
 
   current_waypoint = pwm5_us;
