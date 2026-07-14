@@ -80,10 +80,24 @@ end vectorNorm3;
 
 function waypointAt
   input Real waypoints[7, 3];
-  input Integer index;
+  input Integer index(min = 1, max = 7);
   output Real waypoint[3];
 algorithm
-  waypoint := {waypoints[index, 1], waypoints[index, 2], waypoints[index, 3]};
+  if index == 1 then
+    waypoint := {waypoints[1, 1], waypoints[1, 2], waypoints[1, 3]};
+  elseif index == 2 then
+    waypoint := {waypoints[2, 1], waypoints[2, 2], waypoints[2, 3]};
+  elseif index == 3 then
+    waypoint := {waypoints[3, 1], waypoints[3, 2], waypoints[3, 3]};
+  elseif index == 4 then
+    waypoint := {waypoints[4, 1], waypoints[4, 2], waypoints[4, 3]};
+  elseif index == 5 then
+    waypoint := {waypoints[5, 1], waypoints[5, 2], waypoints[5, 3]};
+  elseif index == 6 then
+    waypoint := {waypoints[6, 1], waypoints[6, 2], waypoints[6, 3]};
+  else
+    waypoint := {waypoints[7, 1], waypoints[7, 2], waypoints[7, 3]};
+  end if;
 annotation(
   Inline = true);
 end waypointAt;
@@ -147,15 +161,15 @@ record GuidanceSetpoints
 end GuidanceSetpoints;
 
 record RouteParameters
-  Integer nSegments = 6 "flyable segments between route points";
+  Integer nSegments = 5 "flyable segments between route points";
   Real waypoints[7, 3] = [
     0.0,   0.0, 0.0;
-    -8.0, -8.0, 3.0;
-    -8.0,  2.0, 3.0;
-    18.0,  2.0, 3.0;
-    18.0, -8.0, 3.0;
-    5.0,  -8.0, 3.0;
-    -8.0, -8.0, 3.0] "route point rows are [x, y, z] [m]";
+    -5.0, -5.0, 3.0;
+    -5.0,  2.0, 3.0;
+    17.0,  2.0, 3.0;
+    16.0, -5.0, 3.0;
+    0.0,   0.0, 0.0;
+    0.0,   0.0, 0.0] "route point rows are [x, y, z] [m]";
   Real cruiseSpeed(unit = "m/s") = 4.5;
   Real altitudeToFlightPathGain = 2.0;
   Real altitudeLookaheadDistance(unit = "m") = 8.0;
@@ -192,8 +206,8 @@ record AttitudeParameters
   // Full aileron stick is 45 deg of bank on the real S2.
   Real rollCommandToAileronGain = 1.0 / 0.7853981633974483
     "S2 bank stick gain: full aileron stick maps to 45 deg";
-  Real rollLimit(unit = "rad") = 0.5235987755982988
-    "30 deg bank command saturation";
+  Real rollLimit(unit = "rad") = 0.7853981633974483
+    "45 deg bank command saturation";
   Real rollRateLimit(unit = "rad/s") = 2.0943951023931953;
   Real courseDeadband(unit = "rad") = 0.03490658503988659;
   Real groundedResetTime(unit = "s") = 2.0
@@ -487,7 +501,8 @@ protected
 algorithm
   when sample(0.0, dt) then
     activeWaypoint := pre(currentWaypoint);
-    segmentEndIndex := activeWaypoint + 1;
+    segmentEndIndex :=
+      if activeWaypoint >= route.nSegments then 2 else activeWaypoint + 1;
     segmentStart := waypointAt(route.waypoints, activeWaypoint);
     segmentEnd := waypointAt(route.waypoints, segmentEndIndex);
 
@@ -536,7 +551,7 @@ algorithm
     // turn waypoint switching into a capture-radius test.
     if airborne and remainingAlongTrackDistance < route.waypointSwitchingDistance then
       currentWaypoint :=
-        if activeWaypoint >= route.nSegments then 1 else activeWaypoint + 1;
+        if activeWaypoint >= route.nSegments then 2 else activeWaypoint + 1;
     else
       currentWaypoint := activeWaypoint;
     end if;

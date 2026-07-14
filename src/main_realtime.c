@@ -352,14 +352,16 @@ static int control_pubs_init(void) {
 
 static void update_mission_telemetry(struct control_context *ctx,
                                      uint64_t now_us, bool auto_mode) {
-  /* currentWaypoint is the 1-based active segment; the segment target is
-   * route_waypoints row currentWaypoint in C indexing (row 0 is the route
-   * start point), so seq n targets route_waypoints[n + 1].
-   */
-  uint16_t total = (uint16_t)g_model.route_nSegments;
+  /* Segment 1 flies from the launch point to waypoint 1. The final segment
+   * closes the loop back to waypoint 1, so it must not be advertised as a
+   * fifth, overlapping visualizer waypoint. */
+  uint16_t route_segments = (uint16_t)g_model.route_nSegments;
+  uint16_t total = route_segments > 1U ? route_segments - 1U : route_segments;
   uint16_t current_seq = 0U;
 
-  if (g_model.currentWaypoint >= 1) {
+  if (route_segments > 1U && g_model.currentWaypoint >= route_segments) {
+    current_seq = 0U;
+  } else if (g_model.currentWaypoint >= 1) {
     current_seq = (uint16_t)g_model.currentWaypoint - 1U;
   }
   if (total > 0U && current_seq >= total) {
@@ -457,9 +459,11 @@ static void update_navigation_target(struct control_context *ctx,
   int32_t wp = g_model.currentWaypoint;
 
   if (wp >= 1 && wp <= g_model.route_nSegments) {
-    /* segment target: route_waypoints row wp (row 0 = route start) */
-    target_east = g_model.route_waypoints[wp][0];
-    target_north = g_model.route_waypoints[wp][1];
+    /* The final segment wraps to waypoint 1 (C row 1). */
+    const int32_t target_row =
+        wp >= g_model.route_nSegments ? 1 : wp;
+    target_east = g_model.route_waypoints[target_row][0];
+    target_north = g_model.route_waypoints[target_row][1];
   }
   if (ctx->mocap.valid) {
     float d_east = (float)target_east - ctx->mocap.x;
