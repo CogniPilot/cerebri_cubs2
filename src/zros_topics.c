@@ -24,7 +24,7 @@ ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(mission_progress,
                                    synapse_topic_MissionProgressData_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(local_position_command,
                                    synapse_topic_LocalPositionCommandData_t);
-ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(vehicle_command,
-                                   struct csyn_vehicle_command);
+ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(trajectory_segment,
+                                   synapse_topic_TrajectorySegmentData_t);
 ZROS_TOPIC_DEFINE_SINGLE_PUBLISHER(navigation_target,
                                    synapse_topic_NavigationTargetData_t);

@@ -91,6 +91,79 @@ equation
   roll_cmd = innerLoop.stick_roll;
 end Cubs2TakeoffOpenLoop;
 
+model Cubs2TakeoffTECS
+  parameter RouteParameters takeoffRoute =
+    RouteParameters(
+      nSegments = 6,
+      cruiseSpeed = 4.5,
+      waypoints = [
+        0.0,   0.0, 0.0;
+        30.0,  0.0, 3.0;
+        60.0,  0.0, 3.0;
+        90.0,  0.0, 3.0;
+        120.0, 0.0, 3.0;
+        150.0, 0.0, 3.0;
+        180.0, 0.0, 3.0
+      ]
+    );
+
+  Cubs2Plant vehicle;
+  Cubs2InnerLoop innerLoop;
+  FixedWingOuterLoop outerLoop(
+    route = takeoffRoute,
+    estimator(useMeasuredRates = 0.0)
+  );
+
+  output Real time_s;
+  output Real x_m;
+  output Real y_m;
+  output Real z_m;
+  output Real roll_rad;
+  output Real pitch_rad;
+  output Real yaw_rad;
+  output Real airspeed_m_s;
+  output Real throttle_cmd;
+  output Real pitch_cmd;
+  output Real roll_cmd;
+
+protected
+  Real euler_rad[3];
+
+equation
+  euler_rad = controllerEulerFromQuat(vehicle.quat);
+  outerLoop.position_m = vehicle.position;
+  outerLoop.euler_rad = euler_rad;
+  outerLoop.velocity_m_s = vehicle.velocity;
+  outerLoop.eulerRate_rad_s = vehicle.gyro;
+  outerLoop.engaged = 1.0;
+
+  innerLoop.armed = 1.0;
+  innerLoop.stick_roll = outerLoop.aileron;
+  innerLoop.stick_pitch = outerLoop.elevator;
+  innerLoop.stick_yaw = outerLoop.rudder;
+  innerLoop.stick_throttle = outerLoop.throttle;
+  innerLoop.gyro = vehicle.gyro;
+  innerLoop.up_body = vehicle.up_body;
+  innerLoop.airspeed = vehicle.airspeed;
+
+  vehicle.ail = innerLoop.ail;
+  vehicle.elev = innerLoop.elev;
+  vehicle.rud = innerLoop.rud;
+  vehicle.thr = innerLoop.thr;
+
+  time_s = time;
+  x_m = vehicle.position[1];
+  y_m = vehicle.position[2];
+  z_m = vehicle.position[3];
+  roll_rad = euler_rad[1];
+  pitch_rad = euler_rad[2];
+  yaw_rad = euler_rad[3];
+  airspeed_m_s = vehicle.airspeed;
+  throttle_cmd = innerLoop.stick_throttle;
+  pitch_cmd = innerLoop.stick_pitch;
+  roll_cmd = innerLoop.stick_roll;
+end Cubs2TakeoffTECS;
+
 model Cubs2AltitudeHold
   parameter Real targetAltitude_m = 3.0;
   parameter RouteParameters straightRoute =

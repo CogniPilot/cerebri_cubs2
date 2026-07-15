@@ -8,6 +8,8 @@
 
 #include <math.h>
 #include <stddef.h>
+#include <stdatomic.h>
+#include <stdint.h>
 #include <string.h>
 
 #include <zephyr/kernel.h>
@@ -31,18 +33,31 @@ struct runtime_value {
   double max;
 };
 
+/* Zenoh-pico invokes queryables from its native transport thread on
+ * native_sim.  That thread is not owned by Zephyr's scheduler, so it must
+ * never enter k_mutex (priority inheritance expects a Zephyr k_thread).
+ * Represent cross-thread doubles as two atomic 32-bit words guarded by a
+ * sequence counter.  Readers never block: a preempted writer is retried on a
+ * later query/control cycle instead of deadlocking a single-core target. */
+struct atomic_double {
+  atomic_uint sequence;
+  atomic_uint_least32_t low;
+  atomic_uint_least32_t high;
+};
+
 struct runtime_control {
-  struct k_mutex lock;
   FixedWingOuterLoopState *model;
-  uint32_t plan_version;
-  bool pending;
-  bool pending_mission;
-  double pending_values[32];
-  bool pending_value_set[32];
+  atomic_uint plan_version;
+  atomic_flag command_writer;
+  atomic_bool pending_mission;
+  atomic_uint mission_sequence;
+  struct atomic_double pending_values[32];
+  atomic_bool pending_value_set[32];
+  struct atomic_double live_values[32];
   double applied_values[32];
   bool applied_value_set[32];
-  double pending_waypoints[CUBS2_MAX_POINTS][3];
-  uint32_t pending_segments;
+  struct atomic_double pending_waypoints[CUBS2_MAX_POINTS][3];
+  atomic_uint pending_segments;
   double applied_waypoints[CUBS2_MAX_POINTS][3];
   uint32_t applied_segments;
   bool applied_mission;
@@ -106,6 +121,54 @@ static struct runtime_value values[] = {
 };
 
 BUILD_ASSERT(ARRAY_SIZE(values) <= ARRAY_SIZE(g_runtime.pending_values));
+
+static void atomic_double_init_value(struct atomic_double *slot,
+                                     double value) {
+  uint64_t bits;
+
+  memcpy(&bits, &value, sizeof(bits));
+  atomic_init(&slot->sequence, 0U);
+  atomic_init(&slot->low, (uint32_t)bits);
+  atomic_init(&slot->high, (uint32_t)(bits >> 32U));
+}
+
+static void atomic_double_store_value(struct atomic_double *slot,
+                                      double value) {
+  uint64_t bits;
+
+  memcpy(&bits, &value, sizeof(bits));
+  (void)atomic_fetch_add_explicit(&slot->sequence, 1U, memory_order_acq_rel);
+  atomic_store_explicit(&slot->low, (uint32_t)bits, memory_order_relaxed);
+  atomic_store_explicit(&slot->high, (uint32_t)(bits >> 32U),
+                        memory_order_relaxed);
+  (void)atomic_fetch_add_explicit(&slot->sequence, 1U, memory_order_release);
+}
+
+static bool atomic_double_try_load(const struct atomic_double *slot,
+                                   double *value) {
+  for (size_t attempt = 0U; attempt < 3U; attempt++) {
+    uint32_t before =
+        atomic_load_explicit(&slot->sequence, memory_order_acquire);
+    uint32_t low;
+    uint32_t high;
+    uint32_t after;
+    uint64_t bits;
+
+    if ((before & 1U) != 0U) {
+      continue;
+    }
+    low = atomic_load_explicit(&slot->low, memory_order_relaxed);
+    high = atomic_load_explicit(&slot->high, memory_order_relaxed);
+    after = atomic_load_explicit(&slot->sequence, memory_order_acquire);
+    if (before != after || (after & 1U) != 0U) {
+      continue;
+    }
+    bits = ((uint64_t)high << 32U) | low;
+    memcpy(value, &bits, sizeof(*value));
+    return true;
+  }
+  return false;
+}
 
 static void apply_value(FixedWingOuterLoopState *model, size_t index,
                         double value) {
@@ -294,12 +357,7 @@ build_trajectory_reply(uint8_t *reply, size_t capacity, size_t *reply_len,
 }
 
 static uint32_t current_plan_version(void) {
-  uint32_t version;
-
-  k_mutex_lock(&g_runtime.lock, K_FOREVER);
-  version = g_runtime.plan_version;
-  k_mutex_unlock(&g_runtime.lock);
-  return version;
+  return atomic_load_explicit(&g_runtime.plan_version, memory_order_acquire);
 }
 
 static bool handle_param_set(const uint8_t *request, size_t request_len,
@@ -333,20 +391,26 @@ static bool handle_param_set(const uint8_t *request, size_t request_len,
                                  synapse_types_CommandResultCode_Unsupported,
                                  name, number, -2);
   }
-  /* Numeric policy belongs to the Ground Station, which is the only peer on
-   * this loopback control plane. Keep only the representation-level guard
-   * needed to prevent NaN/Inf from poisoning the controller state. */
+  /* Numeric policy belongs to Electrode's checked LAN boundary.  This service
+   * is available only on the localhost vehicle session, where the trusted
+   * Ground Station must be able to tune beyond public-LAN limits.  Retain the
+   * representation guard so NaN/Inf can never poison controller state. */
   if (!isfinite(number)) {
     return build_param_set_reply(reply, capacity, reply_len,
                                  synapse_types_CommandResultCode_Denied, name,
                                  number, -3);
   }
 
-  k_mutex_lock(&g_runtime.lock, K_FOREVER);
-  g_runtime.pending_values[index] = number;
-  g_runtime.pending_value_set[index] = true;
-  g_runtime.pending = true;
-  k_mutex_unlock(&g_runtime.lock);
+  if (atomic_flag_test_and_set_explicit(&g_runtime.command_writer,
+                                        memory_order_acquire)) {
+    return build_param_set_reply(
+        reply, capacity, reply_len,
+        synapse_types_CommandResultCode_TemporarilyRejected, name, number, -4);
+  }
+  atomic_double_store_value(&g_runtime.pending_values[index], number);
+  atomic_store_explicit(&g_runtime.pending_value_set[index], true,
+                        memory_order_release);
+  atomic_flag_clear_explicit(&g_runtime.command_writer, memory_order_release);
   return build_param_set_reply(reply, capacity, reply_len,
                                synapse_types_CommandResultCode_Accepted, name,
                                number, 0);
@@ -378,9 +442,11 @@ static bool handle_param_get(const uint8_t *request, size_t request_len,
                                  synapse_types_CommandResultCode_Unsupported,
                                  name, 0.0, -2);
   }
-  k_mutex_lock(&g_runtime.lock, K_FOREVER);
-  number = *(double *)((uint8_t *)g_runtime.model + values[index].live_offset);
-  k_mutex_unlock(&g_runtime.lock);
+  if (!atomic_double_try_load(&g_runtime.live_values[index], &number)) {
+    return build_param_get_reply(
+        reply, capacity, reply_len,
+        synapse_types_CommandResultCode_TemporarilyRejected, name, 0.0, -3);
+  }
   return build_param_get_reply(reply, capacity, reply_len,
                                synapse_types_CommandResultCode_Accepted, name,
                                number, 0);
@@ -448,27 +514,42 @@ static bool handle_trajectory_set(const uint8_t *request, size_t request_len,
     waypoints[i + 1U][2] = end->z;
   }
 
-  expected_version =
-      synapse_cmd_TrajectorySetRequest_expected_plan_version(root);
-  k_mutex_lock(&g_runtime.lock, K_FOREVER);
-  if (expected_version != 0U && expected_version != g_runtime.plan_version) {
-    reply_version = g_runtime.plan_version;
-    k_mutex_unlock(&g_runtime.lock);
+  expected_version = synapse_cmd_TrajectorySetRequest_expected_plan_version(root);
+  if (atomic_flag_test_and_set_explicit(&g_runtime.command_writer,
+                                        memory_order_acquire)) {
+    return build_trajectory_reply(
+        reply, capacity, reply_len,
+        synapse_types_CommandResultCode_TemporarilyRejected,
+        current_plan_version(), -5, 0U);
+  }
+  reply_version = current_plan_version();
+  if (expected_version != 0U && expected_version != reply_version) {
+    atomic_flag_clear_explicit(&g_runtime.command_writer, memory_order_release);
     return build_trajectory_reply(
         reply, capacity, reply_len,
         synapse_types_CommandResultCode_TemporarilyRejected, reply_version, -4,
         0U);
   }
-  memcpy(g_runtime.pending_waypoints, waypoints, sizeof(waypoints));
-  g_runtime.pending_segments = count;
-  g_runtime.pending_mission = true;
-  g_runtime.pending = true;
-  g_runtime.plan_version++;
-  if (g_runtime.plan_version == 0U) {
-    g_runtime.plan_version = 1U;
+  (void)atomic_fetch_add_explicit(&g_runtime.mission_sequence, 1U,
+                                  memory_order_acq_rel);
+  for (size_t row = 0U; row < CUBS2_MAX_POINTS; row++) {
+    for (size_t column = 0U; column < 3U; column++) {
+      atomic_double_store_value(&g_runtime.pending_waypoints[row][column],
+                                waypoints[row][column]);
+    }
   }
-  reply_version = g_runtime.plan_version;
-  k_mutex_unlock(&g_runtime.lock);
+  atomic_store_explicit(&g_runtime.pending_segments, (uint32_t)count,
+                        memory_order_relaxed);
+  (void)atomic_fetch_add_explicit(&g_runtime.mission_sequence, 1U,
+                                  memory_order_release);
+  atomic_store_explicit(&g_runtime.pending_mission, true, memory_order_release);
+  reply_version++;
+  if (reply_version == 0U) {
+    reply_version = 1U;
+  }
+  atomic_store_explicit(&g_runtime.plan_version, reply_version,
+                        memory_order_release);
+  atomic_flag_clear_explicit(&g_runtime.command_writer, memory_order_release);
   return build_trajectory_reply(reply, capacity, reply_len,
                                 synapse_types_CommandResultCode_Accepted,
                                 reply_version, 0, 0U);
@@ -496,8 +577,29 @@ bool cubs2_runtime_control_init(FixedWingOuterLoopState *model) {
   if (model == NULL) {
     return false;
   }
-  g_runtime = (struct runtime_control){.model = model, .plan_version = 1U};
-  k_mutex_init(&g_runtime.lock);
+  memset(&g_runtime, 0, sizeof(g_runtime));
+  g_runtime.model = model;
+  atomic_init(&g_runtime.plan_version, 1U);
+  atomic_flag_clear(&g_runtime.command_writer);
+  atomic_init(&g_runtime.pending_mission, false);
+  atomic_init(&g_runtime.mission_sequence, 0U);
+  atomic_init(&g_runtime.pending_segments, 0U);
+  for (size_t i = 0U; i < ARRAY_SIZE(g_runtime.pending_values); i++) {
+    double value = 0.0;
+
+    if (i < ARRAY_SIZE(values)) {
+      value = *(double *)((uint8_t *)model + values[i].live_offset);
+    }
+    atomic_double_init_value(&g_runtime.pending_values[i], value);
+    atomic_double_init_value(&g_runtime.live_values[i], value);
+    atomic_init(&g_runtime.pending_value_set[i], false);
+  }
+  for (size_t row = 0U; row < CUBS2_MAX_POINTS; row++) {
+    for (size_t column = 0U; column < 3U; column++) {
+      atomic_double_init_value(&g_runtime.pending_waypoints[row][column],
+                               model->route_waypoints[row][column]);
+    }
+  }
   return csyn_zenoh_register_queryable("cmd/param_set", runtime_query,
                                        "param_set") &&
          csyn_zenoh_register_queryable("cmd/param_get", runtime_query,
@@ -507,36 +609,66 @@ bool cubs2_runtime_control_init(FixedWingOuterLoopState *model) {
 }
 
 void cubs2_runtime_control_apply(FixedWingOuterLoopState *model, bool armed) {
+  /* Trusted runtime tuning and route replacement are deliberately available
+   * in both manual and automatic flight.  Applying the complete transaction
+   * at the cycle boundary below prevents partial controller updates; `armed`
+   * is retained in the API so a future airframe policy can restrict updates. */
   ARG_UNUSED(armed);
   if (model == NULL) {
-    return;
-  }
-  k_mutex_lock(&g_runtime.lock, K_FOREVER);
-  if (!g_runtime.pending) {
-    k_mutex_unlock(&g_runtime.lock);
     return;
   }
   /* Apply the complete staged update at one controller-cycle boundary.  This
    * permits live in-flight tuning without allowing a model step to observe a
    * partially updated parameter set or route. */
   for (size_t i = 0U; i < ARRAY_SIZE(values); i++) {
-    if (g_runtime.pending_value_set[i]) {
-      apply_value(model, i, g_runtime.pending_values[i]);
-      g_runtime.applied_values[i] = g_runtime.pending_values[i];
+    if (atomic_exchange_explicit(&g_runtime.pending_value_set[i], false,
+                                 memory_order_acq_rel)) {
+      double value;
+
+      if (!atomic_double_try_load(&g_runtime.pending_values[i], &value)) {
+        atomic_store_explicit(&g_runtime.pending_value_set[i], true,
+                              memory_order_release);
+        continue;
+      }
+      apply_value(model, i, value);
+      atomic_double_store_value(&g_runtime.live_values[i], value);
+      g_runtime.applied_values[i] = value;
       g_runtime.applied_value_set[i] = true;
-      g_runtime.pending_value_set[i] = false;
     }
   }
-  if (g_runtime.pending_mission) {
-    apply_route(model, g_runtime.pending_waypoints, g_runtime.pending_segments);
-    memcpy(g_runtime.applied_waypoints, g_runtime.pending_waypoints,
-           sizeof(g_runtime.applied_waypoints));
-    g_runtime.applied_segments = g_runtime.pending_segments;
+  if (atomic_exchange_explicit(&g_runtime.pending_mission, false,
+                               memory_order_acq_rel)) {
+    double waypoints[CUBS2_MAX_POINTS][3];
+    uint32_t before = atomic_load_explicit(&g_runtime.mission_sequence,
+                                           memory_order_acquire);
+    uint32_t segments;
+    bool complete = (before & 1U) == 0U;
+
+    for (size_t row = 0U; complete && row < CUBS2_MAX_POINTS; row++) {
+      for (size_t column = 0U; column < 3U; column++) {
+        complete = atomic_double_try_load(
+            &g_runtime.pending_waypoints[row][column],
+            &waypoints[row][column]);
+        if (!complete) {
+          break;
+        }
+      }
+    }
+    segments = atomic_load_explicit(&g_runtime.pending_segments,
+                                    memory_order_relaxed);
+    complete = complete &&
+               before == atomic_load_explicit(&g_runtime.mission_sequence,
+                                               memory_order_acquire);
+    if (!complete) {
+      atomic_store_explicit(&g_runtime.pending_mission, true,
+                            memory_order_release);
+      return;
+    }
+    apply_route(model, waypoints, segments);
+    memcpy(g_runtime.applied_waypoints, waypoints, sizeof(waypoints));
+    g_runtime.applied_segments = segments;
     g_runtime.applied_mission = true;
-    g_runtime.pending_mission = false;
   }
-  g_runtime.pending = false;
-  k_mutex_unlock(&g_runtime.lock);
 }
 
 void cubs2_runtime_control_restore(FixedWingOuterLoopState *model) {
@@ -544,14 +676,14 @@ void cubs2_runtime_control_restore(FixedWingOuterLoopState *model) {
     return;
   }
 
-  k_mutex_lock(&g_runtime.lock, K_FOREVER);
   for (size_t i = 0U; i < ARRAY_SIZE(values); i++) {
     if (g_runtime.applied_value_set[i]) {
       apply_value(model, i, g_runtime.applied_values[i]);
+      atomic_double_store_value(&g_runtime.live_values[i],
+                                g_runtime.applied_values[i]);
     }
   }
   if (g_runtime.applied_mission) {
     apply_route(model, g_runtime.applied_waypoints, g_runtime.applied_segments);
   }
-  k_mutex_unlock(&g_runtime.lock);
 }

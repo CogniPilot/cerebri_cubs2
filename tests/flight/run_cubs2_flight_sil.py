@@ -214,6 +214,13 @@ def assert_takeoff(rows: list[dict[str, float | str]]) -> None:
     assert final(rows, "x") > 8.0, f"takeoff: did not accelerate down runway: x={final(rows, 'x'):.2f}"
     assert final(rows, "airspeed") > 3.0, f"takeoff: final airspeed too low: {final(rows, 'airspeed'):.2f}"
     assert max_abs(rows, "roll") < 0.45, f"takeoff: wings not level, max |roll|={max_abs(rows, 'roll'):.2f}"
+    throttle_error = max(
+        abs(f(row, "stick_throttle") - f(row, "tecs_thrust_command") / 0.30)
+        for row in rows
+    )
+    assert throttle_error < 1e-6, f"takeoff: throttle bypassed TECS by {throttle_error:.3g}"
+    assert min(f(row, "stick_throttle") for row in rows if f(row, "time") >= 0.5) < 0.9, \
+        "takeoff: TECS throttle never modulated below the former full-throttle command"
 
 
 def assert_altitude(rows: list[dict[str, float | str]]) -> None:
