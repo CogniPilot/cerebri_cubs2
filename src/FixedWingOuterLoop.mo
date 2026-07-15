@@ -177,7 +177,7 @@ record TecsParameters
   Real pitchKi = 0.0;
   Real energyDistributionIntegralMax = 0.0;
   Real pitchCommandLimit(unit = "rad") = 0.20943951023931953;
-  Real turnThrustGain = 1.0 "thrust FF per unit load-factor excess";
+  Real turnThrustGain = 0.5 "thrust FF per unit load-factor excess";
   Real turnPitchGain = 0.0 "pitch FF [rad] per unit load-factor excess";
 end TecsParameters;
 
@@ -733,7 +733,7 @@ protected
 algorithm
   when sample(0.0, dt) then
     if not airborne then
-      throttle := clip(tecsThrustCommand / vehicle.thrustMax, 0.0, 1.0);
+      throttle := 1.0;
       elevator := params.takeoffElevator;
       aileron := 0.0;
       rudder := 0.0;
@@ -753,8 +753,8 @@ algorithm
       pitchController.derivativeInput := 0.0;
       pitchController.feedforward := 0.0;
     elseif climbout then
-      // Keep the fixed-pitch climb and gentle bank limit, but use TECS for
-      // total-energy/throttle control from the ground roll onward.
+      // Use TECS after liftoff so the fixed-pitch climb does not overspeed the
+      // aircraft before it enters the route.
       throttle := clip(tecsThrustCommand / vehicle.thrustMax, 0.0, 1.0);
       rudder := 0.0;
 
@@ -916,7 +916,7 @@ algorithm
     guidance.airborne := airborne;
     guidance.estimate := estimator.estimate;
 
-    tecs.enabled := engaged > 0.5;
+    tecs.enabled := airborne and engaged > 0.5;
     tecs.setpoints := guidance.setpoints;
     tecs.flightPathAngleEstimate := estimator.estimate.flightPathAngle;
     tecs.accelerationEstimate_m_s2 := estimator.estimate.acceleration_m_s2;
