@@ -32,7 +32,11 @@ model Cubs2NativeSimSIL
   import LieGroups;
   import RigidBody;
 
-  SportCubPlant vehicle;
+  // Start on the runway aligned with the first route leg from (0, 0) to
+  // (-8, -8). Lateral controls remain neutral until the aircraft is airborne.
+  SportCubPlant vehicle(
+    q_start = {0.38268343236508984, 0.0, 0.0, -0.9238795325112867}
+  );
   FixedWingFBW innerLoop(
     v_prot_lo = 2.6,
     v_prot_hi = 3.6,

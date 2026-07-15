@@ -9,6 +9,7 @@ import csv
 from dataclasses import dataclass
 import html
 import math
+import os
 from pathlib import Path
 import sys
 import tomllib
@@ -49,6 +50,35 @@ def stage_end_time(mode: str) -> float:
 
 def scenario_path(mode: str) -> Path:
     return SCENARIO_DIR / f"rumoca-scenario.{mode}.toml"
+
+
+def modelica_root() -> Path:
+    configured = os.environ.get("CUBS2_MODELICA_ROOT")
+    if configured:
+        root = Path(configured).expanduser()
+        return root if root.is_absolute() else ROOT / root
+    return ROOT / ".devenv" / "state" / "west" / "models" / "vendor" / "CMM-v0.0.2"
+
+
+def scenario_for_run(path: Path) -> Path:
+    replacements = {
+        'file = "Cubs2FlightScenarios.mo"': f'file = "{(SCENARIO_DIR / "Cubs2FlightScenarios.mo").as_posix()}"',
+        '"../../../models/vendor/CMM-v0.0.2"': f'"{modelica_root().as_posix()}"',
+        '"../../models/plant/SportCubSIL.mo"': f'"{(ROOT / "models" / "plant" / "SportCubSIL.mo").as_posix()}"',
+        '"../../models/plant/FixedWingSIL.mo"': f'"{(ROOT / "models" / "plant" / "FixedWingSIL.mo").as_posix()}"',
+        '"../../src/FixedWingOuterLoop.mo"': f'"{(ROOT / "src" / "FixedWingOuterLoop.mo").as_posix()}"',
+    }
+
+    updated = path.read_text(encoding="utf-8")
+    for old, new in replacements.items():
+        if old not in updated:
+            raise RuntimeError(f"could not rewrite {old!r} in {path}")
+        updated = updated.replace(old, new, 1)
+
+    generated = ARTIFACT_DIR / path.name
+    generated.parent.mkdir(parents=True, exist_ok=True)
+    generated.write_text(updated, encoding="utf-8")
+    return generated
 
 
 def load_scenario_config(mode: str) -> ScenarioConfig:
@@ -165,7 +195,7 @@ def run_rumoca_stage(mode: str, t_end: float | None = None) -> list[dict[str, fl
         raise FileNotFoundError(f"Rumoca scenario not found: {scenario.path}")
 
     print(f"simulate {scenario.path} with Rumoca Python binding", flush=True)
-    _session, model, sim_config = rum.Session.from_scenario(str(scenario.path))
+    _session, model, sim_config = rum.Session.from_scenario(str(scenario_for_run(scenario.path)))
     result = model.simulate(t=(0.0, t_end if t_end is not None else scenario.t_end), config=sim_config)
     rows = normalize_rumoca_result(result, mode)
     write_csv(scenario.output, rows)
@@ -214,13 +244,18 @@ def assert_takeoff(rows: list[dict[str, float | str]]) -> None:
     assert final(rows, "x") > 8.0, f"takeoff: did not accelerate down runway: x={final(rows, 'x'):.2f}"
     assert final(rows, "airspeed") > 3.0, f"takeoff: final airspeed too low: {final(rows, 'airspeed'):.2f}"
     assert max_abs(rows, "roll") < 0.45, f"takeoff: wings not level, max |roll|={max_abs(rows, 'roll'):.2f}"
+    grounded = [row for row in rows if f(row, "z") < 0.30]
+    assert grounded and min(f(row, "stick_throttle") for row in grounded) > 0.99, \
+        "takeoff: ground roll did not use full throttle"
+    airborne = [row for row in rows if f(row, "z") > 0.45]
+    assert airborne, "takeoff: no samples above the airborne threshold"
     throttle_error = max(
         abs(f(row, "stick_throttle") - f(row, "tecs_thrust_command") / 0.30)
-        for row in rows
+        for row in airborne
     )
-    assert throttle_error < 1e-6, f"takeoff: throttle bypassed TECS by {throttle_error:.3g}"
-    assert min(f(row, "stick_throttle") for row in rows if f(row, "time") >= 0.5) < 0.9, \
-        "takeoff: TECS throttle never modulated below the former full-throttle command"
+    assert throttle_error < 1e-6, f"takeoff: airborne throttle bypassed TECS by {throttle_error:.3g}"
+    assert min(f(row, "stick_throttle") for row in airborne) < 0.9, \
+        "takeoff: TECS throttle never modulated after liftoff"
 
 
 def assert_altitude(rows: list[dict[str, float | str]]) -> None:
