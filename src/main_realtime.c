@@ -19,6 +19,8 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include <zros/private/zros_node_struct.h>
+#include <zros/private/zros_pub_struct.h>
 #include <zros/zros_node.h>
 #include <zros/zros_pub.h>
 #include <zros/zros_topic.h>
@@ -145,12 +147,11 @@ static bool read_mocap_if_updated(struct control_context *ctx) {
   }
 
   const float quaternion_norm_squared =
-      values[3] * values[3] + values[4] * values[4] +
-      values[5] * values[5] + values[6] * values[6];
+      values[3] * values[3] + values[4] * values[4] + values[5] * values[5] +
+      values[6] * values[6];
   const bool quaternion_valid =
       finite &&
-      fabsf(quaternion_norm_squared - 1.0f) <=
-          CUBS2_QUATERNION_NORM_TOLERANCE;
+      fabsf(quaternion_norm_squared - 1.0f) <= CUBS2_QUATERNION_NORM_TOLERANCE;
 
   ctx->mocap_generation = generation;
   ctx->mocap_last_update_ms = k_uptime_get();
@@ -182,9 +183,9 @@ static bool model_stale_failsafe_active(void) {
 }
 
 static uint8_t attitude_estimate_flags(const struct control_context *ctx) {
-  const bool attitude_finite =
-      isfinite(g_model.euler_rad[0]) && isfinite(g_model.euler_rad[1]) &&
-      isfinite(g_model.euler_rad[2]);
+  const bool attitude_finite = isfinite(g_model.euler_rad[0]) &&
+                               isfinite(g_model.euler_rad[1]) &&
+                               isfinite(g_model.euler_rad[2]);
   const bool rates_finite = isfinite(g_model.eulerRateEstimate_rad_s[0]) &&
                             isfinite(g_model.eulerRateEstimate_rad_s[1]) &&
                             isfinite(g_model.eulerRateEstimate_rad_s[2]);
@@ -490,8 +491,7 @@ static void update_navigation_target(struct control_context *ctx,
 static void update_telemetry(struct control_context *ctx, bool auto_mode,
                              uint64_t now_us) {
   bool armed = !ctx->manual.valid || ctx->manual.rc.ch6 >= 1500;
-  uint8_t health_flags =
-      armed ? synapse_topic_VehicleHealthFlags_Armed : 0U;
+  uint8_t health_flags = armed ? synapse_topic_VehicleHealthFlags_Armed : 0U;
 
   if (auto_mode && (!ctx->mocap.valid || model_stale_failsafe_active())) {
     health_flags |= synapse_topic_VehicleHealthFlags_Failsafe;

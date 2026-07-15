@@ -17,6 +17,9 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
+#include <zros/private/zros_node_struct.h>
+#include <zros/private/zros_pub_struct.h>
+#include <zros/private/zros_sub_struct.h>
 #include <zros/zros_node.h>
 #include <zros/zros_pub.h>
 #include <zros/zros_sub.h>
@@ -229,9 +232,9 @@ static bool control_step_due(struct control_context *ctx) {
 
 static uint8_t attitude_estimate_flags(const struct control_context *ctx,
                                        bool odometry_ok) {
-  const bool attitude_finite =
-      isfinite(g_model.euler_rad[0]) && isfinite(g_model.euler_rad[1]) &&
-      isfinite(g_model.euler_rad[2]);
+  const bool attitude_finite = isfinite(g_model.euler_rad[0]) &&
+                               isfinite(g_model.euler_rad[1]) &&
+                               isfinite(g_model.euler_rad[2]);
   const bool rates_finite = isfinite(g_model.eulerRateEstimate_rad_s[0]) &&
                             isfinite(g_model.eulerRateEstimate_rad_s[1]) &&
                             isfinite(g_model.eulerRateEstimate_rad_s[2]);
@@ -251,8 +254,7 @@ static void update_telemetry(struct control_context *ctx, bool auto_mode,
                              uint64_t timestamp_us) {
   bool armed = !ctx->manual.valid || ctx->manual.rc.ch6 >= 1500;
   bool odometry_ok = odometry_valid(&ctx->odometry);
-  uint8_t health_flags =
-      armed ? synapse_topic_VehicleHealthFlags_Armed : 0U;
+  uint8_t health_flags = armed ? synapse_topic_VehicleHealthFlags_Armed : 0U;
 
   if (auto_mode && !odometry_ok) {
     health_flags |= synapse_topic_VehicleHealthFlags_Failsafe;
