@@ -330,14 +330,19 @@
                 modules/lib/cerebri_lockstep \
                 modules/lib/zros \
                 modules/lib/csyn \
-                modules/lib/zephyr_boards \
-                models/vendor/CMM-v0.0.2
+                modules/lib/zephyr_boards
               do
                 if [ ! -d "$workspace/$path" ]; then
                   printf 'error: missing required west checkout: %s/%s\n' "$workspace" "$path" >&2
                   missing=1
                 fi
               done
+
+              modelica_root="''${CUBS2_MODELICA_ROOT:-$workspace/models/vendor/CMM-v0.0.2}"
+              if [ ! -d "$modelica_root" ]; then
+                printf 'error: missing Modelica library: %s\n' "$modelica_root" >&2
+                missing=1
+              fi
 
               if [ "$missing" -ne 0 ]; then
                 printf 'run from the app checkout: nix run .#west-update\n' >&2
@@ -352,6 +357,7 @@
 
               export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
               export CUBS2_RUMOCA_PYTHON="''${CUBS2_RUMOCA_PYTHON:-${pythonEnv}/bin/python}"
+              export CUBS2_MODELICA_ROOT="''${CUBS2_MODELICA_ROOT:-$workspace/models/vendor/CMM-v0.0.2}"
               export GNUARMEMB_TOOLCHAIN_PATH="''${GNUARMEMB_TOOLCHAIN_PATH:-${pkgs.gcc-arm-embedded}}"
               export CUBS2_WORKSPACE_ROOT="$workspace"
 

@@ -296,10 +296,7 @@ def build_fmi3_plant(artifact_dir: Path, log_path: Path) -> Fmi3Artifact:
     generated_dir = artifact_dir / "rumoca-fmi3"
     shutil.rmtree(generated_dir, ignore_errors=True)
     generated_dir.mkdir(parents=True, exist_ok=True)
-    source_roots = [
-        WORKSPACE_ROOT / "models" / "vendor" / "CMM-v0.0.2",
-        ROOT / "models" / "plant",
-    ]
+    source_roots = [modelica_root(), ROOT / "models" / "plant"]
     missing = [path for path in source_roots if not path.exists()]
     if missing:
         raise FileNotFoundError(f"FMI plant source root is missing: {missing[0]}")
@@ -475,6 +472,14 @@ def synapse_c_root_for_sim(sim: Path) -> Path:
     return sim.parent.parent / "_deps" / "synapse_fbs_c-src"
 
 
+def modelica_root() -> Path:
+    configured = os.environ.get("CUBS2_MODELICA_ROOT")
+    if configured:
+        root = Path(configured).expanduser()
+        return root if root.is_absolute() else ROOT / root
+    return WORKSPACE_ROOT / "models" / "vendor" / "CMM-v0.0.2"
+
+
 def synapse_bfbs_for_sim(sim: Path) -> Path:
     bfbs = synapse_c_root_for_sim(sim) / "bfbs" / "all.bfbs"
     if not bfbs.exists():
@@ -490,7 +495,7 @@ def scenario_for_run(scenario: Path, artifact_dir: Path, t_end: float | None, sy
     text = scenario.read_text()
     replacements = {
         'file = "Cubs2NativeSimSIL.mo"': f'file = "{(ROOT / "tests" / "zephyr" / "Cubs2NativeSimSIL.mo").as_posix()}"',
-        '"../../../models/vendor/CMM-v0.0.2"': f'"{(WORKSPACE_ROOT / "models" / "vendor" / "CMM-v0.0.2").as_posix()}"',
+        '"../../../models/vendor/CMM-v0.0.2"': f'"{modelica_root().as_posix()}"',
         '"../../models/plant"': f'"{(ROOT / "models" / "plant").as_posix()}"',
         'output = "artifacts/native-sim-sil/native-sim-rumoca.html"': f'output = "{(artifact_dir / "native-sim-rumoca.html").as_posix()}"',
         'bfbs = ["build-native_sim/_deps/synapse_fbs_c-src/bfbs/all.bfbs"]': f'bfbs = ["{synapse_bfbs.as_posix()}"]',
