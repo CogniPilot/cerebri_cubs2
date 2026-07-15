@@ -130,6 +130,11 @@ nix run .#west-update
 nix run .#build
 ```
 
+The Nix commands use an isolated CUBS2 West workspace under
+`.devenv/state/west/` by default. Set `CUBS2_WEST_WORKSPACE=/path/to/workspace`
+to choose its location explicitly; the selected workspace is governed only by
+this repository's `west.yml`.
+
 The flake also exposes `.#build-native-sim`, `.#build-native-sim-64`, `.#flash`,
 `.#menuconfig`, and an inlined `nixosModules.default` for NixOS host setup.
 

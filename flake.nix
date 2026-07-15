@@ -10,7 +10,11 @@
   };
 
   outputs =
-    { self, nixpkgs, rumoca-src }:
+    {
+      self,
+      nixpkgs,
+      rumoca-src,
+    }:
     let
       lib = nixpkgs.lib;
       supportedSystems = [
@@ -21,7 +25,6 @@
       pkgsFor = system: import nixpkgs { inherit system; };
       appDirectory = "cerebri_cubs2";
       appDisplayName = "CUBS2";
-      appCacheName = "cerebri-cubs2";
       defaultBoard = "mr_vmu_tropic";
       defaultNativeSimBoard = "native_sim";
       defaultNativeSim64Board = "native_sim/native/64";
@@ -197,9 +200,10 @@
             pkgs.xz
             pkgs.zip
             pythonEnv
-          ] ++ hostMultilibTools;
+          ]
+          ++ hostMultilibTools;
 
-          commonScript = ''
+          workspaceScript = ''
             zephyr_app_find_app() {
               local dir
               dir="$(pwd -P)"
@@ -234,17 +238,13 @@
 
             zephyr_app_managed_workspace() {
               local app="$1"
-              local cache_root
-              local key
 
               if [ -n "''${CUBS2_WEST_WORKSPACE:-}" ]; then
                 realpath -m "$CUBS2_WEST_WORKSPACE"
                 return 0
               fi
 
-              cache_root="''${XDG_CACHE_HOME:-$HOME/.cache}/${appCacheName}"
-              key="$(printf '%s' "$app" | sha256sum | cut -c1-16)"
-              printf '%s\n' "$cache_root/west-$key"
+              printf '%s\n' "$app/.devenv/state/west"
             }
 
             zephyr_app_workspace() {
@@ -253,8 +253,8 @@
               local expected_manifest
               local actual_manifest
 
-              if [ -n "''${CUBS2_WORKSPACE_ROOT:-}" ]; then
-                realpath -m "$CUBS2_WORKSPACE_ROOT"
+              if [ -n "''${CUBS2_WEST_WORKSPACE:-}" ]; then
+                zephyr_app_managed_workspace "$app"
                 return 0
               fi
 
@@ -266,9 +266,7 @@
                 actual_manifest="$(realpath "$actual_manifest")"
               fi
 
-              if [ -z "$actual_manifest" ] ||
-                 [ "$actual_manifest" = "$expected_manifest" ] ||
-                 [ "''${CUBS2_ALLOW_FOREIGN_WEST:-0}" = "1" ]; then
+              if [ "$actual_manifest" = "$expected_manifest" ]; then
                 printf '%s\n' "$source_workspace"
               else
                 zephyr_app_managed_workspace "$app"
@@ -295,12 +293,13 @@
                    ! git diff --cached --quiet; then
                   git -c user.name='cerebri-cubs2 nix' \
                       -c user.email='cerebri-cubs2-nix@example.invalid' \
-                      commit -q -m 'Update cerebri_cubs2 manifest'
+                      commit -q -s -m 'Update cerebri_cubs2 manifest'
                 fi
               )
 
               if [ ! -d "$workspace/.west" ]; then
-                (cd "$workspace" && env -u ZEPHYR_BASE -u WEST_TOPDIR west init -l manifest)
+                mkdir -p "$workspace/.west"
+                printf '[manifest]\npath = manifest\nfile = west.yml\n' >"$workspace/.west/config"
               fi
 
               actual_manifest="$(zephyr_app_active_manifest "$workspace")"
@@ -315,6 +314,10 @@
                 return 1
               fi
             }
+          '';
+
+          commonScript = ''
+            ${workspaceScript}
 
             zephyr_app_require_module_paths() {
               local workspace="$1"
@@ -327,13 +330,21 @@
                 modules/hal/cmsis_6 \
                 modules/hal/nxp \
                 modules/lib/zenoh-pico \
-                modules/lib/cerebri_lockstep \
-                modules/lib/zros \
-                modules/lib/csyn \
                 modules/lib/zephyr_boards
               do
                 if [ ! -d "$workspace/$path" ]; then
                   printf 'error: missing required west checkout: %s/%s\n' "$workspace" "$path" >&2
+                  missing=1
+                fi
+              done
+
+              for path in \
+                "$CUBS2_CEREBRI_MODULES_ROOT" \
+                "$CUBS2_ZROS_ROOT" \
+                "$CUBS2_CSYN_ROOT"
+              do
+                if [ ! -d "$path" ]; then
+                  printf 'error: missing required editable module: %s\n' "$path" >&2
                   missing=1
                 fi
               done
@@ -358,8 +369,12 @@
               export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
               export CUBS2_RUMOCA_PYTHON="''${CUBS2_RUMOCA_PYTHON:-${pythonEnv}/bin/python}"
               export CUBS2_MODELICA_ROOT="''${CUBS2_MODELICA_ROOT:-$workspace/models/vendor/CMM-v0.0.2}"
+              export CUBS2_CEREBRI_MODULES_ROOT="''${CUBS2_CEREBRI_MODULES_ROOT:-$workspace/modules/lib/cerebri_lockstep}"
+              export CUBS2_ZROS_ROOT="''${CUBS2_ZROS_ROOT:-$workspace/modules/lib/zros}"
+              export CUBS2_CSYN_ROOT="''${CUBS2_CSYN_ROOT:-$workspace/modules/lib/csyn}"
               export GNUARMEMB_TOOLCHAIN_PATH="''${GNUARMEMB_TOOLCHAIN_PATH:-${pkgs.gcc-arm-embedded}}"
               export CUBS2_WORKSPACE_ROOT="$workspace"
+              export WEST_TOPDIR="$workspace"
 
               if [ -d "$workspace/zephyr" ]; then
                 export ZEPHYR_BASE="$workspace/zephyr"
@@ -369,12 +384,8 @@
             zephyr_app_require_workspace() {
               local app="$1"
               local workspace
-              local source_workspace
-              local expected_manifest
               local actual_manifest
               workspace="$(zephyr_app_workspace "$app")"
-              source_workspace="$(zephyr_app_source_workspace "$app")"
-              expected_manifest="$(realpath "$app/west.yml")"
 
               if [ ! -d "$workspace/.west" ]; then
                 printf 'error: missing west workspace metadata at %s/.west\n' "$workspace" >&2
@@ -388,15 +399,6 @@
                 return 1
               fi
               actual_manifest="$(realpath "$actual_manifest")"
-
-              if [ "$workspace" = "$source_workspace" ] &&
-                 [ "$actual_manifest" != "$expected_manifest" ] &&
-                 [ "''${CUBS2_ALLOW_FOREIGN_WEST:-0}" != "1" ]; then
-                printf 'error: active west manifest is %s\n' "$actual_manifest" >&2
-                printf '       ${appDirectory} expects %s\n' "$expected_manifest" >&2
-                printf 'run nix run .#west-update to create/update the managed ${appDisplayName} workspace\n' >&2
-                return 1
-              fi
 
               if [ -z "''${ZEPHYR_BASE:-}" ] || [ ! -d "$ZEPHYR_BASE" ]; then
                 printf 'error: missing Zephyr checkout; expected %s/zephyr or ZEPHYR_BASE\n' "$workspace" >&2
@@ -463,6 +465,17 @@
               inherit name;
               runtimeInputs = baseTools ++ extraInputs;
               inherit text;
+            };
+
+          mkWestUpdateApp =
+            name: text:
+            pkgs.writeShellApplication {
+              inherit name text;
+              runtimeInputs = [
+                pkgs.coreutils
+                pkgs.git
+                pkgs.python3Packages.west
+              ];
             };
 
           cubs2-build = mkWestApp "cubs2-build" [ ] ''
@@ -564,8 +577,8 @@
             exec west build -b "$board" -d "$build_dir" -t menuconfig "$app" "$@"
           '';
 
-          cubs2-west-update = mkWestApp "cubs2-west-update" [ ] ''
-            ${commonScript}
+          cubs2-west-update = mkWestUpdateApp "cubs2-west-update" ''
+            ${workspaceScript}
 
             app="$(zephyr_app_find_app)"
             workspace="$(zephyr_app_workspace "$app")"
@@ -574,6 +587,7 @@
 
             if [ "$workspace" != "$source_workspace" ]; then
               printf 'using managed ${appDisplayName} west workspace: %s\n' "$workspace" >&2
+              export WEST_TOPDIR="$workspace"
               zephyr_app_prepare_managed_workspace "$app" "$workspace"
               cd "$workspace"
               exec env -u ZEPHYR_BASE -u WEST_TOPDIR west update "$@"
@@ -592,7 +606,7 @@
               if [ "$actual_manifest" != "$expected_manifest" ]; then
                 printf 'error: refusing to update source workspace with foreign manifest %s\n' "$actual_manifest" >&2
                 printf '       expected %s\n' "$expected_manifest" >&2
-                printf 'unset CUBS2_WORKSPACE_ROOT/CUBS2_ALLOW_FOREIGN_WEST to use the managed workspace fallback\n' >&2
+                printf 'set CUBS2_WEST_WORKSPACE to select another isolated workspace\n' >&2
                 exit 1
               fi
             fi
@@ -722,26 +736,29 @@
             '';
           };
 
-          csyn = mkWestApp "csyn" [
-            pkgs.cargo
-            pkgs.pkg-config
-            pkgs.rustc
-          ] ''
-            ${commonScript}
+          csyn =
+            mkWestApp "csyn"
+              [
+                pkgs.cargo
+                pkgs.pkg-config
+                pkgs.rustc
+              ]
+              ''
+                ${commonScript}
 
-            app="$(zephyr_app_find_app)"
-            zephyr_app_export_common "$app"
-            workspace="$CUBS2_WORKSPACE_ROOT"
-            manifest="$workspace/modules/lib/csyn/rust/Cargo.toml"
+                app="$(zephyr_app_find_app)"
+                zephyr_app_export_common "$app"
+                workspace="$CUBS2_WORKSPACE_ROOT"
+                manifest="$workspace/modules/lib/csyn/rust/Cargo.toml"
 
-            if [ ! -f "$manifest" ]; then
-              printf 'error: csyn Rust CLI not found at %s\n' "$manifest" >&2
-              printf 'run from the app checkout: nix run .#west-update\n' >&2
-              exit 1
-            fi
+                if [ ! -f "$manifest" ]; then
+                  printf 'error: csyn Rust CLI not found at %s\n' "$manifest" >&2
+                  printf 'run from the app checkout: nix run .#west-update\n' >&2
+                  exit 1
+                fi
 
-            exec cargo run --quiet --manifest-path "$manifest" -- "$@"
-          '';
+                exec cargo run --quiet --manifest-path "$manifest" -- "$@"
+              '';
 
           cubs2-native-sim-64-sil-run = pkgs.writeShellApplication {
             name = "cubs2-native-sim-64-sil-run";
@@ -971,20 +988,16 @@
                   actual_manifest="$(realpath "$actual_manifest")"
                 fi
 
-                if [ -n "''${CUBS2_WORKSPACE_ROOT:-}" ]; then
-                  workspace="$(realpath -m "$CUBS2_WORKSPACE_ROOT")"
-                elif [ -z "$actual_manifest" ] ||
-                     [ "$actual_manifest" = "$expected_manifest" ] ||
-                     [ "''${CUBS2_ALLOW_FOREIGN_WEST:-0}" = "1" ]; then
+                if [ "$actual_manifest" = "$expected_manifest" ]; then
                   workspace="$source_workspace"
                 elif [ -n "''${CUBS2_WEST_WORKSPACE:-}" ]; then
                   workspace="$(realpath -m "$CUBS2_WEST_WORKSPACE")"
                 else
-                  key="$(printf '%s' "$app" | sha256sum | cut -c1-16)"
-                  workspace="''${XDG_CACHE_HOME:-$HOME/.cache}/${appCacheName}/west-$key"
+                  workspace="$app/.devenv/state/west"
                 fi
 
                 export CUBS2_WORKSPACE_ROOT="$workspace"
+                export WEST_TOPDIR="$workspace"
                 if [ -d "$workspace/zephyr" ]; then
                   export ZEPHYR_BASE="$workspace/zephyr"
                 elif [ -z "''${ZEPHYR_BASE:-}" ]; then

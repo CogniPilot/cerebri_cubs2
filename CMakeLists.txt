@@ -11,14 +11,24 @@ else()
   get_filename_component(WORKSPACE_ROOT ${CMAKE_CURRENT_SOURCE_DIR} DIRECTORY)
 endif()
 
+set(CUBS2_CEREBRI_MODULES_ROOT "${WORKSPACE_ROOT}/modules/lib/cerebri_lockstep"
+  CACHE PATH "Cerebri Zephyr module source"
+)
+set(CUBS2_ZROS_ROOT "${WORKSPACE_ROOT}/modules/lib/zros"
+  CACHE PATH "ZROS Zephyr module source"
+)
+set(CUBS2_CSYN_ROOT "${WORKSPACE_ROOT}/modules/lib/csyn"
+  CACHE PATH "CSyn Zephyr module source"
+)
+
 set(ZEPHYR_MODULES
   ${WORKSPACE_ROOT}/modules/hal/cmsis
   ${WORKSPACE_ROOT}/modules/hal/cmsis_6
   ${WORKSPACE_ROOT}/modules/hal/nxp
   ${WORKSPACE_ROOT}/modules/lib/zenoh-pico
-  ${WORKSPACE_ROOT}/modules/lib/cerebri_lockstep
-  ${WORKSPACE_ROOT}/modules/lib/zros
-  ${WORKSPACE_ROOT}/modules/lib/csyn
+  ${CUBS2_CEREBRI_MODULES_ROOT}
+  ${CUBS2_ZROS_ROOT}
+  ${CUBS2_CSYN_ROOT}
   ${WORKSPACE_ROOT}/modules/lib/zephyr_boards
 )
 
