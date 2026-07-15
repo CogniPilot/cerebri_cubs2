@@ -25,16 +25,16 @@
     "rumoca-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1783693060,
-        "narHash": "sha256-MhBF2ZIjV3k1rNmzKxq+f3AGXqQoiHxGOztahe4+qMI=",
+        "lastModified": 1783915323,
+        "narHash": "sha256-yuevEmlTE+tm/8MVxNmnUnJFvbBtYnIU4w1Bd/4jiSE=",
         "owner": "CogniPilot",
         "repo": "rumoca",
-        "rev": "a72d40e0eb2cb4f3a5ca18a5dad75da49801e67a",
+        "rev": "880ff2482dd83595425ead5963505d2100e083f1",
         "type": "github"
       },
       "original": {
         "owner": "CogniPilot",
-        "ref": "v0.9.19",
+        "ref": "v0.9.20",
         "repo": "rumoca",
         "type": "github"
       }

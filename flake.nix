@@ -4,7 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     rumoca-src = {
-      url = "github:CogniPilot/rumoca/v0.9.19";
+      url = "github:CogniPilot/rumoca/v0.9.20";
       flake = false;
     };
   };
@@ -28,8 +28,8 @@
       defaultBoard = "mr_vmu_tropic";
       defaultNativeSimBoard = "native_sim";
       defaultNativeSim64Board = "native_sim/native/64";
-      rumocaVersion = "0.9.19";
-      synapseFbsVersion = "0.7.0";
+      rumocaVersion = "0.9.20";
+      synapseFbsVersion = "0.8.0";
       mkRumocaPythonPackage =
         pkgs:
         pkgs.python3Packages.buildPythonPackage {
@@ -45,7 +45,7 @@
             src = rumoca-src;
             cargoRoot = ".";
             name = "rumoca-${rumocaVersion}-cargo-vendor";
-            hash = "sha256-8KcX5LawzhwqQv7+yd65l4fLCQy+1x31tpCU6ec/ZGg=";
+            hash = "sha256-Vk0Rcz/z16eQOfluUF3dpob9uFES0D1bM09X/AUg5KU=";
           };
 
           nativeBuildInputs = [
@@ -85,7 +85,7 @@
 
           src = pkgs.fetchurl {
             url = "https://files.pythonhosted.org/packages/source/s/synapse-fbs/synapse_fbs-${synapseFbsVersion}.tar.gz";
-            hash = "sha256-iGe6Jj5nLQ5EOHCNAxenro3tGpF+RCwzUvZPOMlzVco=";
+            hash = "sha256-/Em//4QjuaCzKT2DxlelVy1AF7KhRaxToohGvhescic=";
           };
 
           nativeBuildInputs = [

@@ -51,11 +51,11 @@ Inbound `ManualControlData` and `OdometryData` are fixed-layout struct
 payloads, and all outbound topics are fixed-layout struct payloads.
 
 Modelica code generation and SIL simulation run through the Rumoca Python
-binding. The Nix environment pins the Rumoca `v0.9.19` package and exports
+binding. The Nix environment pins the Rumoca `v0.9.20` package and exports
 `CUBS2_RUMOCA_PYTHON` for CMake. For non-Nix builds, use a Python interpreter
 with `rumoca` installed or set `CUBS2_RUMOCA_PYTHON=/path/to/python`.
 
-The default Nix input uses the portable upstream `v0.9.19` source. To test a
+The default Nix input uses the portable upstream `v0.9.20` source. To test a
 Rumoca workspace next to this repository without changing `flake.nix` or
 `flake.lock`, override that input with a relative path:
 
