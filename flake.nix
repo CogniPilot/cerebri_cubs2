@@ -696,29 +696,10 @@
               nativeSimSilPythonEnv
             ];
             text = ''
-              find_app() {
-                local dir
-                dir="$(pwd -P)"
+              ${commonScript}
 
-                while [ "$dir" != "/" ]; do
-                  if [ -f "$dir/west.yml" ] && [ -f "$dir/prj.conf" ] && [ -f "$dir/CMakeLists.txt" ]; then
-                    printf '%s\n' "$dir"
-                    return 0
-                  fi
-
-                  if [ -f "$dir/${appDirectory}/west.yml" ] && [ -f "$dir/${appDirectory}/prj.conf" ]; then
-                    printf '%s\n' "$dir/${appDirectory}"
-                    return 0
-                  fi
-
-                  dir="$(dirname "$dir")"
-                done
-
-                printf 'error: could not find the ${appDirectory} app from %s\n' "$(pwd -P)" >&2
-                return 1
-              }
-
-              app="$(find_app)"
+              app="$(zephyr_app_find_app)"
+              zephyr_app_export_common "$app"
               cd "$app"
               rumoca_python="''${CUBS2_RUMOCA_PYTHON:-}"
               if [ -n "$rumoca_python" ]; then
@@ -845,6 +826,24 @@
           rumoca = rumocaPythonPackage;
           synapse-fbs = synapseFbsPythonPackage;
           default = host-tools;
+        }
+      );
+
+      checks = forAllSystems (
+        system:
+        let
+          pkgs = pkgsFor system;
+          runner = self.packages.${system}.cubs2-native-sim-sil-run;
+        in
+        {
+          native-sim-sil-isolated-west = pkgs.runCommand "native-sim-sil-isolated-west" { } ''
+            runner=${runner}/bin/cubs2-native-sim-sil-run
+            grep -F 'app="$(zephyr_app_find_app)"' "$runner"
+            grep -F 'zephyr_app_export_common "$app"' "$runner"
+            grep -F 'export CUBS2_MODELICA_ROOT=' "$runner"
+            grep -F '$workspace/models/vendor/CMM-v0.0.2' "$runner"
+            touch "$out"
+          '';
         }
       );
 

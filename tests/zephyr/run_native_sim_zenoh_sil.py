@@ -47,7 +47,6 @@ import matplotlib.pyplot as plt
 
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKSPACE_ROOT = Path(os.environ.get("CUBS2_WORKSPACE_ROOT", ROOT.parent)).resolve()
 
 SYNAPSE_ODOMETRY_TOPIC = "odom"
 SYNAPSE_PWM_TOPIC = "pwm"
@@ -474,10 +473,12 @@ def synapse_c_root_for_sim(sim: Path) -> Path:
 
 def modelica_root() -> Path:
     configured = os.environ.get("CUBS2_MODELICA_ROOT")
-    if configured:
-        root = Path(configured).expanduser()
-        return root if root.is_absolute() else ROOT / root
-    return WORKSPACE_ROOT / "models" / "vendor" / "CMM-v0.0.2"
+    if not configured:
+        raise RuntimeError(
+            "CUBS2_MODELICA_ROOT is required; run this through the project Nix app"
+        )
+    root = Path(configured).expanduser()
+    return root if root.is_absolute() else ROOT / root
 
 
 def synapse_bfbs_for_sim(sim: Path) -> Path:
