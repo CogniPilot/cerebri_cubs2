@@ -665,6 +665,31 @@
               Vehicles/Cubs2/Qualification/run_qualification.py "$@"
           '';
 
+          cubs2-trajectory-compare = mkWestApp "cubs2-trajectory-compare" [ flightPythonEnv ] ''
+            ${commonScript}
+
+            app="$(zephyr_app_find_app)"
+            zephyr_app_export_common "$app"
+            reference_label="''${CUBS2_TRAJECTORY_REFERENCE_LABEL:-modelica}"
+            reference="''${CUBS2_TRAJECTORY_REFERENCE:-$CUBS2_MODELICA_MODELS_ROOT/artifacts/vehicles/cubs2/mission-trajectory.csv}"
+            sil="''${CUBS2_TRAJECTORY_SIL:-$app/artifacts/native-sim-64-sil/mission-trajectory.csv}"
+            bil="''${CUBS2_TRAJECTORY_BIL:-$app/artifacts/bil/work/cerebri_cubs2_fmi3/mission-trajectory.csv}"
+            output="''${CUBS2_TRAJECTORY_OUTPUT:-$app/artifacts/trajectory-comparison}"
+
+            exec "${flightPythonEnv}/bin/python" \
+              "$CUBS2_MODELICA_MODELS_ROOT/tools/trajectory_compare.py" \
+              --reference "$reference_label=$reference" \
+              --candidate "sil=$sil" \
+              --candidate "bil=$bil" \
+              --output "$output" \
+              --duration-delta-max-s "''${CUBS2_TRAJECTORY_DURATION_DELTA_MAX_S:-0.025}" \
+              --position-rmse-max-m "''${CUBS2_TRAJECTORY_POSITION_RMSE_MAX_M:-3.6}" \
+              --position-p95-max-m "''${CUBS2_TRAJECTORY_POSITION_P95_MAX_M:-4.6}" \
+              --altitude-rmse-max-m "''${CUBS2_TRAJECTORY_ALTITUDE_RMSE_MAX_M:-0.25}" \
+              --attitude-p95-max-deg "''${CUBS2_TRAJECTORY_ATTITUDE_P95_MAX_DEG:-22.5}" \
+              "$@"
+          '';
+
           cubs2-native-sim-sil-test = pkgs.writeShellApplication {
             name = "cubs2-native-sim-sil-test";
             runtimeInputs = [
@@ -798,6 +823,7 @@
               cubs2-menuconfig
               cubs2-west-update
               cubs2-model-qualification
+              cubs2-trajectory-compare
               cubs2-native-sim-sil-test
               cubs2-native-sim-sil-run
               cubs2-native-sim-64-sil-test
@@ -819,6 +845,7 @@
             cubs2-menuconfig
             cubs2-west-update
             cubs2-model-qualification
+            cubs2-trajectory-compare
             cubs2-native-sim-sil-test
             cubs2-native-sim-sil-run
             cubs2-native-sim-64-sil-test
@@ -903,6 +930,12 @@
             type = "app";
             program = "${packages.cubs2-model-qualification}/bin/cubs2-model-qualification";
             meta.description = "Run staged CUBS2 model-level flight qualification";
+          };
+
+          trajectory-compare = {
+            type = "app";
+            program = "${packages.cubs2-trajectory-compare}/bin/cubs2-trajectory-compare";
+            meta.description = "Compare CUBS2 mission trajectory logs and render overlays";
           };
 
           native-sim-sil-test = {

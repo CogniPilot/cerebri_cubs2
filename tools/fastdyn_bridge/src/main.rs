@@ -263,12 +263,17 @@ fn replace_symlink(link: &Path, target: &Path) -> Result<()> {
 
 fn launch_upstream() -> Result<()> {
     let options = launch_options()?;
-    let source_headers = options
-        .cubs2_build_dir
-        .join("_deps/synapse_fbs_c-src/include");
+    let source_headers = env::var_os("CUBS2_SYNAPSE_C_ROOT")
+        .map(PathBuf::from)
+        .map(|root| root.join("include"))
+        .unwrap_or_else(|| {
+            options
+                .cubs2_build_dir
+                .join("_deps/synapse_fbs_c-src/include")
+        });
     if !source_headers.is_dir() {
         bail!(
-            "CUBS2 build has no generated synapse_fbs headers: {}",
+            "CUBS2 Synapse C headers are unavailable: {}",
             source_headers.display()
         );
     }

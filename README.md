@@ -136,8 +136,22 @@ The Nix commands use an isolated CUBS2 West workspace under
 to choose its location explicitly; the selected workspace is governed only by
 this repository's `west.yml`.
 
-The flake also exposes `.#build-native-sim`, `.#build-native-sim-64`, `.#flash`,
-`.#menuconfig`, and an inlined `nixosModules.default` for NixOS host setup.
+The flake also exposes `.#build-native-sim`, `.#build-native-sim-64`,
+`.#trajectory-compare`, `.#flash`, `.#menuconfig`, and an inlined
+`nixosModules.default` for NixOS host setup.
+
+After producing the pure Modelica, SIL, and BIL mission logs, run:
+
+```sh
+nix run .#trajectory-compare
+```
+
+The application compares the same route using the canonical
+`time_s,x_m,y_m,z_m,roll_rad,pitch_rad,yaw_rad` contract, writes complete
+overlays and JSON/Markdown/HTML reports below
+`artifacts/trajectory-comparison/`, and enforces CUBS2's error budget. Set
+`CUBS2_MODELICA_MODELS_ROOT` when the common model checkout is outside the
+default West workspace.
 
 To run the Zephyr `native_sim` SIL test, use:
 
@@ -217,7 +231,8 @@ overlay="$(realpath fastdyn/mr_vmu_tropic.overlay)"
 
 CUBS2_BUILD_DIR="$PWD/build-mr_vmu_tropic-fastdyn-realtime" \
   nix run .#build -- -p always -- \
-  "-DEXTRA_CONF_FILE=$base;$realtime" \
+  "-DCONF_FILE=$base" \
+  "-DEXTRA_CONF_FILE=$realtime" \
   "-DDTC_OVERLAY_FILE=$overlay"
 ```
 

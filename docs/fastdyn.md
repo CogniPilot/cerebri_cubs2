@@ -33,11 +33,11 @@ nix run .#west-update
 Build the hardware binary with the CUBS2-owned rehosting inputs:
 
 ```sh
-extra_conf="$(realpath fastdyn/prj.conf)"
+conf_file="$(realpath fastdyn/prj.conf)"
 overlay="$(realpath fastdyn/mr_vmu_tropic.overlay)"
 CUBS2_BUILD_DIR="$PWD/build-mr_vmu_tropic-fastdyn" \
   nix run .#build -- -p always -- \
-    -DEXTRA_CONF_FILE="$extra_conf" \
+    -DCONF_FILE="$conf_file" \
     -DDTC_OVERLAY_FILE="$overlay"
 
 cargo test --release --locked --manifest-path tools/fastdyn_bridge/Cargo.toml
@@ -66,10 +66,12 @@ network. To retain Ethernet, CSyn, and Zenoh as an asynchronous diagnostics
 channel, merge the vehicle-owned communications fragment:
 
 ```sh
-extra_conf="$(realpath fastdyn/prj.conf);$(realpath fastdyn/comms.conf)"
+conf_file="$(realpath fastdyn/prj.conf)"
+extra_conf="$(realpath fastdyn/comms.conf)"
 overlay="$(realpath fastdyn/mr_vmu_tropic.overlay)"
 CUBS2_BUILD_DIR="$PWD/build-mr_vmu_tropic-fastdyn-comms" \
   nix run .#build -- -p always -- \
+    -DCONF_FILE="$conf_file" \
     -DEXTRA_CONF_FILE="$extra_conf" \
     -DDTC_OVERLAY_FILE="$overlay"
 ```
@@ -80,7 +82,9 @@ The network remains a side channel and never paces the simulation.
 ## Outputs and overrides
 
 The default mission writes its logs, traces, CSV files, and reports below
-`artifacts/bil/`. Useful mission overrides are:
+`artifacts/bil/`, including the canonical
+`work/cerebri_cubs2_fmi3/mission-trajectory.csv` used by
+`nix run .#trajectory-compare`. Useful mission overrides are:
 
 ```sh
 export CUBS2_FASTDYN_T_END=10

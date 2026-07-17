@@ -1289,6 +1289,14 @@ def write_merged_csv(path: Path, rows: list[dict[str, float]]) -> None:
         writer.writerows(rows)
 
 
+def write_trajectory_csv(path: Path, rows: list[dict[str, float]]) -> None:
+    fields = ["time_s", "x_m", "y_m", "z_m", "roll_rad", "pitch_rad", "yaw_rad"]
+    with path.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows({field: row[field] for field in fields} for row in rows)
+
+
 def image_data_uri(path: Path) -> str:
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:image/png;base64,{encoded}"
@@ -1405,6 +1413,7 @@ def main() -> int:
     pwm_csv = artifact_dir / "native-sim-pwm.csv"
     attitude_csv = artifact_dir / "native-sim-attitude-command.csv"
     merged_csv = artifact_dir / "native-sim-flight.csv"
+    trajectory_csv = artifact_dir / "mission-trajectory.csv"
 
     effective_t_end = args.t_end if args.t_end is not None else DEFAULT_T_END
     rumoca_cmd: list[str] | None = None
@@ -1572,6 +1581,7 @@ def main() -> int:
 
         merged_rows = merge_flight_rows(plant_rows, bridge_log.pwm_rows, bridge_log.attitude_rows)
         write_merged_csv(merged_csv, merged_rows)
+        write_trajectory_csv(trajectory_csv, merged_rows)
         plot_paths = plot_flight(merged_rows, artifact_dir)
         metrics = flight_metrics(merged_rows, bridge_log)
         metrics.update(lockstep)
@@ -1583,6 +1593,7 @@ def main() -> int:
             raise RuntimeError("native SIL flight checks failed:\n- " + "\n- ".join(failed))
 
         print(f"wrote {merged_csv}")
+        print(f"wrote {trajectory_csv}")
         print(f"wrote {artifact_dir / 'native-sim-summary.md'}")
         print(f"wrote {artifact_dir / 'native-sim-report.html'}")
         return 0
