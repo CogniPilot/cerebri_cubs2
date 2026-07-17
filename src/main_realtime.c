@@ -6,7 +6,7 @@
 #include <csyn/csyn_codec.h>
 #include <csyn/csyn_zros.h>
 
-#include "FixedWingOuterLoop.h"
+#include "Vehicles_Cubs2_OuterLoop.h"
 #if defined(CONFIG_CUBS2_FASTDYN)
 #include "lockstep.h"
 #endif
@@ -63,7 +63,7 @@ struct control_context {
   bool previous_auto_mode;
 };
 
-static FixedWingOuterLoopState g_model;
+static Vehicles_Cubs2_OuterLoopState g_model;
 static struct control_context g_control_ctx;
 static struct zros_node g_node;
 static struct zros_pub g_pwm_outputs_pub;
@@ -227,7 +227,7 @@ static bool read_manual_if_updated(struct control_context *ctx) {
 #endif
 }
 
-static void fixed_wing_map_input(FixedWingOuterLoopState *model,
+static void fixed_wing_map_input(Vehicles_Cubs2_OuterLoopState *model,
                                  const struct csyn_mocap_rigid_body *mocap) {
   float roll = 0.0f;
   float pitch = 0.0f;
@@ -241,7 +241,7 @@ static void fixed_wing_map_input(FixedWingOuterLoopState *model,
         .z = mocap->qz,
     };
 
-    /* FixedWingOuterLoop consumes Euler [roll, pitch, yaw] in radians. */
+    /* The CUBS2 outer loop consumes Euler [roll, pitch, yaw] in radians. */
     csyn_euler_from_quatf(&quat, &roll, &pitch, &yaw);
     pitch = -pitch;
   }
@@ -254,7 +254,7 @@ static void fixed_wing_map_input(FixedWingOuterLoopState *model,
   model->euler_rad[2] = yaw;
 }
 
-static void fixed_wing_map_output(const FixedWingOuterLoopState *model,
+static void fixed_wing_map_output(const Vehicles_Cubs2_OuterLoopState *model,
                                   csyn_rc_channels16_t *rc) {
   /* Wire is nose-up = high us on ch1 (2026-07-09 flight): no negations. */
   *rc = (csyn_rc_channels16_t){
@@ -561,8 +561,8 @@ int main(void) {
   int rc;
 
   *ctx = (struct control_context){0};
-  EFMI_INIT(FixedWingOuterLoop, &g_model);
-  EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
+  EFMI_INIT(Vehicles_Cubs2_OuterLoop, &g_model);
+  EFMI_RECALIBRATE(Vehicles_Cubs2_OuterLoop, &g_model);
   /* Mocap delivers pose only: the estimator derives velocity and rates. */
   g_model.estimator_useMeasuredRates = 0.0;
   if (!cubs2_runtime_control_init(&g_model)) {
@@ -628,7 +628,7 @@ int main(void) {
     if (step_control && ctx->mocap.valid) {
       fixed_wing_map_input(&g_model, &ctx->mocap);
       g_model.engaged = auto_mode ? 1.0 : 0.0;
-      EFMI_STEP(FixedWingOuterLoop, &g_model);
+      EFMI_STEP(Vehicles_Cubs2_OuterLoop, &g_model);
       if (ctx->estimator_control_steps < UINT32_MAX) {
         ctx->estimator_control_steps++;
       }

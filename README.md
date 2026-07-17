@@ -15,9 +15,9 @@ The board is an Ethernet/Zenoh control node:
 - publish `vehicle_health`, `attitude_estimate`, `attitude_command`, and
   `control_loop_metrics` synapse topics for controller diagnostics
 
-The app itself (`src/`) is the control loop and the single Modelica controller
-source. The fixed-wing controller equations live in `src/FixedWingOuterLoop.mo`;
-CMake generates the eFMU plus C production code under
+The app itself (`src/`) owns the firmware control loop. The fixed-wing
+controller equations live in `Vehicles/Cubs2/OuterLoop.mo` in the
+`modelica_models` West project; CMake generates the eFMU plus C production code under
 `${CMAKE_BINARY_DIR}/generated/rumoca`. Generated Rumoca artifacts are not
 committed source.
 
@@ -50,12 +50,13 @@ locked by csyn rather than per app. No local `flatc` install is required.
 Inbound `ManualControlData` and `OdometryData` are fixed-layout struct
 payloads, and all outbound topics are fixed-layout struct payloads.
 
-Modelica code generation and SIL simulation run through the Rumoca Python
-binding. The Nix environment pins the Rumoca `v0.9.20` package and exports
+Modelica code generation and model qualification run through the Rumoca Python
+binding. The Nix environment pins a verified Rumoca `0.9.20`-series revision and exports
 `CUBS2_RUMOCA_PYTHON` for CMake. For non-Nix builds, use a Python interpreter
 with `rumoca` installed or set `CUBS2_RUMOCA_PYTHON=/path/to/python`.
 
-The default Nix input uses the portable upstream `v0.9.20` source. To test a
+The default Nix input uses a portable upstream revision with the common-model
+FMI/eFMI projection fixes. To test a
 Rumoca workspace next to this repository without changing `flake.nix` or
 `flake.lock`, override that input with a relative path:
 
@@ -68,10 +69,10 @@ nix run --override-input rumoca-src \
 The override can point at any Rumoca Git checkout. No user-specific absolute
 path is stored in the Nix configuration.
 
-The flight SIL test passes each `rumoca-scenario.*.toml` file to the Rumoca
-Python API, so Rumoca owns the physics, controller compilation, solver, and
-scenario settings. Python only normalizes traces for checks and plots. CI runs
-the flight SIL test through `nix run .#flight-sil-test` and uploads the
+The model-level qualification passes each `rumoca-scenario.*.toml` file to the
+Rumoca Python API, so Rumoca owns the physics, controller compilation, solver,
+and scenario settings. Python only normalizes traces for checks and plots. CI
+runs it through `nix run .#model-qualification` and uploads the
 generated CSV, PNG, Markdown, and HTML report artifacts.
 
 The pattern scenario uses the checked-in mission. When
@@ -204,15 +205,15 @@ nix run .#native-sim-64-sil-test
 
 ## FastDyn execution modes
 
-The FastDyn base profile selects `CONFIG_CUBS2_LOCKSTEP=y`. It uses the direct
+The CUBS2-owned `fastdyn/prj.conf` profile selects `CONFIG_CUBS2_LOCKSTEP=y`. It uses the direct
 shared-memory simulator transport and runs without Ethernet or Zenoh. To build
 the mutually exclusive realtime mode, append the checked-in configuration
-fragment after FastDyn's base profile:
+fragment after the base profile:
 
 ```sh
-base="$(realpath ../FastDyn/tests/integration/cerebri_cubs2_fastdyn.conf)"
+base="$(realpath fastdyn/prj.conf)"
 realtime="$(realpath boards/mr_vmu_tropic_fastdyn_realtime.conf)"
-overlay="$(realpath ../FastDyn/tests/integration/cerebri_cubs2_fastdyn.overlay)"
+overlay="$(realpath fastdyn/mr_vmu_tropic.overlay)"
 
 CUBS2_BUILD_DIR="$PWD/build-mr_vmu_tropic-fastdyn-realtime" \
   nix run .#build -- -p always -- \
@@ -227,3 +228,6 @@ Both modes retain the same fixed-layout shared-memory ABI. Add FastDyn's
 communications profile when runtime `param_get`, `param_set`, and
 `trajectory_set` services are needed; `CONFIG_CUBS2_RUNTIME_CONTROL` then
 defaults on with `CONFIG_CSYN_ZENOH`.
+
+The complete standalone workflow and ownership boundary are documented in
+[`docs/fastdyn.md`](docs/fastdyn.md).

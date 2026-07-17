@@ -11,14 +11,30 @@ else()
   get_filename_component(WORKSPACE_ROOT ${CMAKE_CURRENT_SOURCE_DIR} DIRECTORY)
 endif()
 
-set(CUBS2_CEREBRI_MODULES_ROOT "${WORKSPACE_ROOT}/modules/lib/cerebri_lockstep"
-  CACHE PATH "Cerebri Zephyr module source"
+function(cubs2_cache_path variable fallback description)
+  if(DEFINED ENV{${variable}})
+    set(default "$ENV{${variable}}")
+  else()
+    set(default "${fallback}")
+  endif()
+  set(${variable} "${default}" CACHE PATH "${description}")
+endfunction()
+
+cubs2_cache_path(CUBS2_CEREBRI_MODULES_ROOT
+  "${WORKSPACE_ROOT}/modules/lib/cerebri_lockstep"
+  "Cerebri Zephyr module source"
 )
-set(CUBS2_ZROS_ROOT "${WORKSPACE_ROOT}/modules/lib/zros"
-  CACHE PATH "ZROS Zephyr module source"
+cubs2_cache_path(CUBS2_ZROS_ROOT
+  "${WORKSPACE_ROOT}/modules/lib/zros"
+  "ZROS Zephyr module source"
 )
-set(CUBS2_CSYN_ROOT "${WORKSPACE_ROOT}/modules/lib/csyn"
-  CACHE PATH "CSyn Zephyr module source"
+cubs2_cache_path(CUBS2_CSYN_ROOT
+  "${WORKSPACE_ROOT}/modules/lib/csyn"
+  "CSyn Zephyr module source"
+)
+cubs2_cache_path(CUBS2_MODELICA_MODELS_ROOT
+  "${WORKSPACE_ROOT}/models/modelica_models"
+  "Shared CogniPilot Modelica model library"
 )
 
 set(ZEPHYR_EXTRA_MODULES
@@ -77,12 +93,16 @@ set(CUBS2_EFMI_CONTROL_STAMPS)
 set(CUBS2_EFMI_CONTROL_SOURCES)
 set(CUBS2_EFMI_CONTROL_INCLUDE_DIRS)
 
-function(cubs2_add_efmi_control_model model_name)
-  set(_model_file ${CMAKE_CURRENT_SOURCE_DIR}/src/${model_name}.mo)
-  set(_efmu_dir ${CUBS2_RUMOCA_GENERATED_DIR}/${model_name})
-  set(_stamp ${CUBS2_RUMOCA_GENERATED_DIR}/${model_name}.galec-production.stamp)
-  set(_source ${_efmu_dir}/ProductionCode/${model_name}.c)
-  set(_header ${_efmu_dir}/ProductionCode/${model_name}.h)
+file(GLOB_RECURSE CUBS2_MODELICA_SOURCES CONFIGURE_DEPENDS
+  "${CUBS2_MODELICA_MODELS_ROOT}/*.mo"
+)
+
+function(cubs2_add_efmi_control_model model_file model_name generated_name)
+  set(_model_file ${CUBS2_MODELICA_MODELS_ROOT}/${model_file})
+  set(_efmu_dir ${CUBS2_RUMOCA_GENERATED_DIR}/${generated_name})
+  set(_stamp ${CUBS2_RUMOCA_GENERATED_DIR}/${generated_name}.galec-production.stamp)
+  set(_source ${_efmu_dir}/ProductionCode/${generated_name}.c)
+  set(_header ${_efmu_dir}/ProductionCode/${generated_name}.h)
 
   add_custom_command(
     OUTPUT ${_stamp}
@@ -96,14 +116,15 @@ function(cubs2_add_efmi_control_model model_name)
     COMMAND ${CMAKE_COMMAND} -E rm -rf "${_efmu_dir}"
     COMMAND "${CUBS2_RUMOCA_PYTHON}"
             "-c"
-            "from pathlib import Path; import sys; import rumoca as rum; model_file, model_name, target, output = sys.argv[1:5]; Path(output).mkdir(parents=True, exist_ok=True); generated = rum.Session().codegen_file(model_file, model_name, target, output); [print(f'wrote {path}') for path in generated]"
+            "from pathlib import Path; import sys; import rumoca as rum; model_file, model_name, target, output, source_root = sys.argv[1:6]; Path(output).mkdir(parents=True, exist_ok=True); generated = rum.Session(roots=[source_root]).codegen_file(model_file, model_name, target, output); [print(f'wrote {path}') for path in generated]"
             "${_model_file}"
             "${model_name}"
             "galec-production"
             "${_efmu_dir}"
+            "${CUBS2_MODELICA_MODELS_ROOT}"
     COMMAND ${CMAKE_COMMAND} -E touch "${_stamp}"
     DEPENDS
-      ${_model_file}
+      ${CUBS2_MODELICA_SOURCES}
     COMMENT "Generating ${model_name} eFMI Production Code with Rumoca Python binding"
     VERBATIM
   )
@@ -116,7 +137,11 @@ function(cubs2_add_efmi_control_model model_name)
   set(CUBS2_EFMI_CONTROL_INCLUDE_DIRS ${CUBS2_EFMI_CONTROL_INCLUDE_DIRS} PARENT_SCOPE)
 endfunction()
 
-cubs2_add_efmi_control_model(FixedWingOuterLoop)
+cubs2_add_efmi_control_model(
+  Vehicles/Cubs2/OuterLoop.mo
+  Vehicles.Cubs2.OuterLoop
+  Vehicles_Cubs2_OuterLoop
+)
 
 add_custom_target(cubs2_efmi_control_codegen
   DEPENDS ${CUBS2_EFMI_CONTROL_STAMPS}

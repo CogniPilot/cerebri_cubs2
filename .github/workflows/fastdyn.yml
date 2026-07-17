@@ -1,0 +1,81 @@
+name: FastDyn mission
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CUBS2_WEST_WORKSPACE: ${{ github.workspace }}/.west-workspace
+
+jobs:
+  mission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out CUBS2
+        uses: actions/checkout@v4
+
+      - name: Check out FastDyn runtime
+        uses: actions/checkout@v4
+        with:
+          repository: jgoppert/FastDyn
+          ref: fix/cerebri-fastdyn-lockstep
+          path: FastDyn
+
+      - name: Install toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake device-tree-compiler git jq \
+            libexpat1-dev libfdt-dev libglib2.0-dev libprotobuf-dev \
+            libpixman-1-dev libssl-dev meson ninja-build pkg-config \
+            protobuf-compiler python3-venv zlib1g-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: cachix/install-nix-action@v31
+
+      - name: Build CUBS2 rehosting firmware
+        run: |
+          nix run .#west-update
+          extra_conf="$(realpath fastdyn/prj.conf)"
+          overlay="$(realpath fastdyn/mr_vmu_tropic.overlay)"
+          CUBS2_BUILD_DIR="$PWD/build-mr_vmu_tropic-fastdyn" nix run .#build -- -p always -- \
+            -DEXTRA_CONF_FILE="$extra_conf" \
+            -DDTC_OVERLAY_FILE="$overlay"
+
+      - name: Build generic FastDyn runtime
+        working-directory: FastDyn
+        run: |
+          python -m venv build/venv
+          PATH="$PWD/build/venv/bin:$PATH" \
+            ./setup.sh --venv build/venv --build-qemu --qemu-root build/qemu \
+              --with-rumoca --skip-optifuzz
+          export PATH="$PWD/build/venv/bin:$PATH"
+          export PKG_CONFIG_PATH="$PWD/out/deps/cjson/install/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          export LD_LIBRARY_PATH="$PWD/out/deps/cjson/install/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          make qemu_path=build/qemu DEV=true PHY=true FLIGHT_CONTROLLERS=true FMU=true
+          cmake -S boardrunner/boardrunner_sdk -B boardrunner/boardrunner_sdk/build \
+            -DFASTDYN_INCLUDE_DIR="$PWD/include" \
+            -DQEMU_INCLUDE_DIR="$PWD/build/qemu/include"
+          cmake --build boardrunner/boardrunner_sdk/build -j2
+
+      - name: Test CUBS2 lockstep bridge
+        run: cargo test --release --locked --manifest-path tools/fastdyn_bridge/Cargo.toml
+
+      - name: Fly CUBS2 mission
+        env:
+          FASTDYN_ROOT: ${{ github.workspace }}/FastDyn
+          CUBS2_FASTDYN_BUILD_DIR: ${{ github.workspace }}/build-mr_vmu_tropic-fastdyn
+          CUBS2_WORKSPACE_ROOT: ${{ env.CUBS2_WEST_WORKSPACE }}
+        run: fastdyn/run_mission.sh
+
+      - name: Upload mission artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cubs2-fastdyn-mission
+          path: artifacts/bil/**
+          if-no-files-found: ignore

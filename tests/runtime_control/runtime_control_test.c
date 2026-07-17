@@ -15,7 +15,7 @@
 #include <synapse/transfer_verifier.h>
 #include <zephyr/sys/util.h>
 
-#include "FixedWingOuterLoop.h"
+#include "Vehicles_Cubs2_OuterLoop.h"
 #include "runtime_control.h"
 
 #define REQUEST_CAPACITY 2048U
@@ -169,7 +169,7 @@ static void test_malformed_requests(void) {
   }
 }
 
-static void test_parameter_restore(FixedWingOuterLoopState *model) {
+static void test_parameter_restore(Vehicles_Cubs2_OuterLoopState *model) {
   uint8_t request[REQUEST_CAPACITY];
   uint8_t reply[REQUEST_CAPACITY];
   size_t request_len = build_param_set(request, "route.cruiseSpeed", 7.25);
@@ -179,15 +179,15 @@ static void test_parameter_restore(FixedWingOuterLoopState *model) {
   assert(model->route_cruiseSpeed == 7.25);
   assert(model->guidance_route_cruiseSpeed == 7.25);
 
-  FixedWingOuterLoop_startup(model);
-  FixedWingOuterLoop_recalibrate(model);
+  Vehicles_Cubs2_OuterLoop_startup(model);
+  Vehicles_Cubs2_OuterLoop_recalibrate(model);
   assert(model->route_cruiseSpeed != 7.25);
   cubs2_runtime_control_restore(model);
   assert(model->route_cruiseSpeed == 7.25);
   assert(model->guidance_route_cruiseSpeed == 7.25);
 }
 
-static void test_trusted_parameter_policy(FixedWingOuterLoopState *model) {
+static void test_trusted_parameter_policy(Vehicles_Cubs2_OuterLoopState *model) {
   uint8_t request[REQUEST_CAPACITY];
   uint8_t reply[REQUEST_CAPACITY];
   size_t request_len = build_param_set(request, "route.cruiseSpeed", 12.5);
@@ -224,7 +224,7 @@ static void *refresh_stress_thread(void *arg) {
   return NULL;
 }
 
-static void test_parameter_refresh_concurrency(FixedWingOuterLoopState *model) {
+static void test_parameter_refresh_concurrency(Vehicles_Cubs2_OuterLoopState *model) {
   const struct refresh_stress_context ctx = {.iterations = 2000U};
   pthread_t thread;
 
@@ -237,7 +237,7 @@ static void test_parameter_refresh_concurrency(FixedWingOuterLoopState *model) {
 }
 
 static uint32_t
-submit_trajectory(FixedWingOuterLoopState *model, uint32_t expected_version,
+submit_trajectory(Vehicles_Cubs2_OuterLoopState *model, uint32_t expected_version,
                   synapse_topic_TrajectorySegmentData_t *segments, size_t count,
                   synapse_types_CommandResultCode_enum_t expected_result,
                   bool apply) {
@@ -256,7 +256,7 @@ submit_trajectory(FixedWingOuterLoopState *model, uint32_t expected_version,
   return synapse_cmd_TrajectorySetReply_plan_version(result);
 }
 
-static void test_trajectory_transactions(FixedWingOuterLoopState *model) {
+static void test_trajectory_transactions(Vehicles_Cubs2_OuterLoopState *model) {
   synapse_topic_TrajectorySegmentData_t long_route[5];
   synapse_topic_TrajectorySegmentData_t short_route[2];
   synapse_topic_TrajectorySegmentData_t staged_route[2];
@@ -310,8 +310,8 @@ static void test_trajectory_transactions(FixedWingOuterLoopState *model) {
   assert(model->route_waypoints[0][0] == staged_route[0].p0_enu_m.x);
   assert(model->route_waypoints[2][0] == staged_route[1].p1_enu_m.x);
 
-  FixedWingOuterLoop_startup(model);
-  FixedWingOuterLoop_recalibrate(model);
+  Vehicles_Cubs2_OuterLoop_startup(model);
+  Vehicles_Cubs2_OuterLoop_recalibrate(model);
   cubs2_runtime_control_restore(model);
   assert(model->route_nSegments == 2);
   assert(model->route_waypoints[0][0] == staged_route[0].p0_enu_m.x);
@@ -319,10 +319,10 @@ static void test_trajectory_transactions(FixedWingOuterLoopState *model) {
 }
 
 int main(void) {
-  FixedWingOuterLoopState model;
+  Vehicles_Cubs2_OuterLoopState model;
 
-  FixedWingOuterLoop_startup(&model);
-  FixedWingOuterLoop_recalibrate(&model);
+  Vehicles_Cubs2_OuterLoop_startup(&model);
+  Vehicles_Cubs2_OuterLoop_recalibrate(&model);
   assert(cubs2_runtime_control_init(&model));
   assert(service_count == SERVICE_COUNT);
 

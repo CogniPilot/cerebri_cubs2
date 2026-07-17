@@ -71,8 +71,9 @@ RUMOCA_SCENARIO_CHECK_CODE = (
     "assert callable(runner), 'Rumoca Python Session.run_scenario is required'"
 )
 RUMOCA_RUN_SCENARIO_CODE = "import sys; import rumoca as rum; rum.Session().run_scenario(sys.argv[1])"
-FMI_MODEL_FILE = ROOT / "tests" / "zephyr" / "Cubs2NativeSimSIL.mo"
-FMI_MODEL_NAME = "Cubs2NativeSimSIL"
+FMI_MODEL_RELATIVE = Path("Vehicles/Cubs2/AvionicsPlant.mo")
+FMI_MODEL_NAME = "Vehicles.Cubs2.AvionicsPlant"
+FMI_GENERATED_NAME = "Vehicles_Cubs2_AvionicsPlant"
 
 TRACE_OUTPUT_NAMES = (
     "x_m",
@@ -178,8 +179,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--locator",
-        default="udp/127.0.0.1:7447",
+        default="udp/127.0.0.1:7448",
         help="Zenoh router locator; must match CONFIG_CSYN_ZENOH_LOCATOR",
+    )
+    parser.add_argument(
+        "--reuse-router",
+        action="store_true",
+        help="connect to an already-running router at --locator instead of starting zenohd",
     )
     parser.add_argument(
         "--scenario",
@@ -295,7 +301,7 @@ def build_fmi3_plant(artifact_dir: Path, log_path: Path) -> Fmi3Artifact:
     generated_dir = artifact_dir / "rumoca-fmi3"
     shutil.rmtree(generated_dir, ignore_errors=True)
     generated_dir.mkdir(parents=True, exist_ok=True)
-    source_roots = [modelica_root(), ROOT / "models" / "plant"]
+    source_roots = [modelica_root()]
     missing = [path for path in source_roots if not path.exists()]
     if missing:
         raise FileNotFoundError(f"FMI plant source root is missing: {missing[0]}")
@@ -303,8 +309,8 @@ def build_fmi3_plant(artifact_dir: Path, log_path: Path) -> Fmi3Artifact:
     previous_modelica_path = os.environ.get("MODELICAPATH")
     os.environ["MODELICAPATH"] = os.pathsep.join(os.fspath(path) for path in source_roots)
     try:
-        generated = rum.Session().codegen_file(
-            os.fspath(FMI_MODEL_FILE),
+        generated = rum.Session(roots=[os.fspath(modelica_root())]).codegen_file(
+            os.fspath(modelica_root() / FMI_MODEL_RELATIVE),
             FMI_MODEL_NAME,
             "fmi3",
             os.fspath(generated_dir),
@@ -347,10 +353,10 @@ def build_fmi3_plant(artifact_dir: Path, log_path: Path) -> Fmi3Artifact:
     if completed.returncode != 0:
         raise RuntimeError(f"Rumoca FMI 3 build failed\n\n{tail(log_path)}")
 
-    libraries = sorted((generated_dir / "binaries").glob(f"**/{FMI_MODEL_NAME}.so"))
+    libraries = sorted((generated_dir / "binaries").glob(f"**/{FMI_GENERATED_NAME}.so"))
     if len(libraries) != 1:
         raise RuntimeError(f"expected one packaged FMI shared library, found {len(libraries)}")
-    fmu = generated_dir / f"{FMI_MODEL_NAME}.fmu"
+    fmu = generated_dir / f"{FMI_GENERATED_NAME}.fmu"
     if not fmu.exists():
         raise RuntimeError(f"Rumoca FMI 3 build did not create {fmu}")
     model_description = generated_dir / "modelDescription.xml"
@@ -472,10 +478,10 @@ def synapse_c_root_for_sim(sim: Path) -> Path:
 
 
 def modelica_root() -> Path:
-    configured = os.environ.get("CUBS2_MODELICA_ROOT")
+    configured = os.environ.get("CUBS2_MODELICA_MODELS_ROOT")
     if not configured:
         raise RuntimeError(
-            "CUBS2_MODELICA_ROOT is required; run this through the project Nix app"
+            "CUBS2_MODELICA_MODELS_ROOT is required; run this through the project Nix app"
         )
     root = Path(configured).expanduser()
     return root if root.is_absolute() else ROOT / root
@@ -495,9 +501,10 @@ def synapse_bfbs_for_sim(sim: Path) -> Path:
 def scenario_for_run(scenario: Path, artifact_dir: Path, t_end: float | None, synapse_bfbs: Path) -> Path:
     text = scenario.read_text()
     replacements = {
-        'file = "Cubs2NativeSimSIL.mo"': f'file = "{(ROOT / "tests" / "zephyr" / "Cubs2NativeSimSIL.mo").as_posix()}"',
-        '"../../../models/vendor/CMM-v0.0.2"': f'"{modelica_root().as_posix()}"',
-        '"../../models/plant"': f'"{(ROOT / "models" / "plant").as_posix()}"',
+        'file = "Vehicles/Cubs2/AvionicsPlant.mo"': (
+            f'file = "{(modelica_root() / FMI_MODEL_RELATIVE).as_posix()}"'
+        ),
+        '"../../../models/modelica_models"': f'"{modelica_root().as_posix()}"',
         'output = "artifacts/native-sim-sil/native-sim-rumoca.html"': f'output = "{(artifact_dir / "native-sim-rumoca.html").as_posix()}"',
         'bfbs = ["build-native_sim/_deps/synapse_fbs_c-src/bfbs/all.bfbs"]': f'bfbs = ["{synapse_bfbs.as_posix()}"]',
         'path = "artifacts/native-sim-sil/native-sim-plant.csv"': f'path = "{(artifact_dir / "native-sim-plant.csv").as_posix()}"',
@@ -1302,9 +1309,9 @@ def write_reports(
         "With `--plant-backend rumoca`, traffic can be inspected while the test runs:",
         "",
         "```sh",
-        "csyn --connect udp/127.0.0.1:7447 topic echo odom",
-        "csyn --connect udp/127.0.0.1:7447 topic hz pwm",
-        "csyn --connect udp/127.0.0.1:7447 topic echo att_sp",
+        "csyn --connect udp/127.0.0.1:7448 topic echo odom",
+        "csyn --connect udp/127.0.0.1:7448 topic hz pwm",
+        "csyn --connect udp/127.0.0.1:7448 topic echo att_sp",
         "```",
         "",
         "## Checks",
@@ -1432,9 +1439,14 @@ def main() -> int:
     bridge_thread: threading.Thread | None = None
 
     try:
-        router = start_process("zenohd", ["zenohd", "-l", args.locator], router_log)
-        time.sleep(0.5)
-        require_running(router, router_log, "zenohd")
+        if args.reuse_router:
+            router_log.write_text(
+                f"using external Zenoh router at {args.locator}\n", encoding="utf-8"
+            )
+        else:
+            router = start_process("zenohd", ["zenohd", "-l", args.locator], router_log)
+            time.sleep(0.5)
+            require_running(router, router_log, "zenohd")
 
         sim_cmd = [os.fspath(sim), f"-rt-ratio={args.sim_speed:g}"]
         sim_env = None
@@ -1479,7 +1491,8 @@ def main() -> int:
         if rumoca_cmd is not None:
             rumoca_process = start_process("rumoca", rumoca_cmd, rumoca_log)
             while rumoca_process.poll() is None:
-                require_running(router, router_log, "zenohd")
+                if router is not None:
+                    require_running(router, router_log, "zenohd")
                 require_running(zephyr, sim_log, "native_sim")
                 if bridge_log.error is not None:
                     raise RuntimeError(f"native SIL bridge failed: {bridge_log.error}")
@@ -1491,7 +1504,8 @@ def main() -> int:
                 )
         elif fmi3_runner_process is not None:
             while fmi3_runner_process.poll() is None:
-                require_running(router, router_log, "zenohd")
+                if router is not None:
+                    require_running(router, router_log, "zenohd")
                 require_running(zephyr, sim_log, "native_sim")
                 time.sleep(0.01)
             if fmi3_runner_process.returncode != 0:
@@ -1502,7 +1516,8 @@ def main() -> int:
         else:
             assert bridge_thread is not None
             while bridge_thread.is_alive():
-                require_running(router, router_log, "zenohd")
+                if router is not None:
+                    require_running(router, router_log, "zenohd")
                 require_running(zephyr, sim_log, "native_sim")
                 if bridge_log.error is not None:
                     raise RuntimeError(f"native SIL FMI loop failed: {bridge_log.error}")

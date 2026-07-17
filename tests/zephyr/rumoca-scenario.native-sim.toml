@@ -1,6 +1,5 @@
 source_roots = [
-  "../../../models/vendor/CMM-v0.0.2",
-  "../../models/plant",
+  "../../../models/modelica_models",
 ]
 
 [rumoca]
@@ -8,8 +7,8 @@ version = "1"
 task = "simulate"
 
 [model]
-file = "Cubs2NativeSimSIL.mo"
-name = "Cubs2NativeSimSIL"
+file = "Vehicles/Cubs2/AvionicsPlant.mo"
+name = "Vehicles.Cubs2.AvionicsPlant"
 
 [sim]
 dt = 0.02
@@ -28,7 +27,7 @@ mode = "auto"
 
 [transport.zenoh]
 mode = "client"
-endpoint = "udp/127.0.0.1:7447"
+endpoint = "udp/127.0.0.1:7448"
 
 [publish]
 send = "cubs2/sil/external_odometry"

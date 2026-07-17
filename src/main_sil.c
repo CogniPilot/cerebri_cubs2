@@ -6,7 +6,7 @@
 #include <csyn/csyn_codec.h>
 #include <csyn/csyn_zros.h>
 
-#include "FixedWingOuterLoop.h"
+#include "Vehicles_Cubs2_OuterLoop.h"
 #include "lockstep.h"
 #include "runtime_control.h"
 
@@ -47,7 +47,7 @@ struct control_context {
   bool previous_auto_mode;
 };
 
-static FixedWingOuterLoopState g_model;
+static Vehicles_Cubs2_OuterLoopState g_model;
 static struct control_context g_control_ctx;
 static struct zros_node g_node;
 static struct zros_pub g_pwm_outputs_pub;
@@ -86,13 +86,13 @@ static bool odometry_valid(const synapse_topic_OdometryData_t *odom) {
          odom->status != synapse_topic_OdometryStatus_OutlierRejected;
 }
 
-static void fixed_wing_map_input(FixedWingOuterLoopState *model,
+static void fixed_wing_map_input(Vehicles_Cubs2_OuterLoopState *model,
                                  const synapse_topic_OdometryData_t *odom) {
   float roll = 0.0f;
   float pitch = 0.0f;
   float yaw = 0.0f;
 
-  /* FixedWingOuterLoop consumes Euler [roll, pitch, yaw] in radians. */
+  /* The CUBS2 outer loop consumes Euler [roll, pitch, yaw] in radians. */
   csyn_euler_from_quatf(&odom->pose.attitude, &roll, &pitch, &yaw);
 
   model->position_m[0] = odom->pose.position_enu_m.x;
@@ -109,7 +109,7 @@ static void fixed_wing_map_input(FixedWingOuterLoopState *model,
   model->eulerRate_rad_s[2] = odom->twist.angular_velocity_flu_rad_s.yaw;
 }
 
-static void fixed_wing_map_output(const FixedWingOuterLoopState *model,
+static void fixed_wing_map_output(const Vehicles_Cubs2_OuterLoopState *model,
                                   csyn_rc_channels16_t *rc) {
   *rc = (csyn_rc_channels16_t){
       .ch0 = csyn_pwm_from_centered_axis(-(float)model->aileron),
@@ -315,8 +315,8 @@ int main(void) {
   int rc;
 
   *ctx = (struct control_context){0};
-  EFMI_INIT(FixedWingOuterLoop, &g_model);
-  EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
+  EFMI_INIT(Vehicles_Cubs2_OuterLoop, &g_model);
+  EFMI_RECALIBRATE(Vehicles_Cubs2_OuterLoop, &g_model);
   if (!cubs2_runtime_control_init(&g_model)) {
     LOG_ERR("failed to register runtime configuration services");
     return -1;
@@ -365,8 +365,8 @@ int main(void) {
 
     auto_mode = auto_mode_selected(ctx);
     if (auto_mode && !ctx->previous_auto_mode) {
-      EFMI_INIT(FixedWingOuterLoop, &g_model);
-      EFMI_RECALIBRATE(FixedWingOuterLoop, &g_model);
+      EFMI_INIT(Vehicles_Cubs2_OuterLoop, &g_model);
+      EFMI_RECALIBRATE(Vehicles_Cubs2_OuterLoop, &g_model);
       cubs2_runtime_control_restore(&g_model);
       ctx->estimator_control_steps = 0U;
     }
@@ -380,7 +380,7 @@ int main(void) {
       if (step_control && odometry_ok) {
         fixed_wing_map_input(&g_model, &ctx->odometry);
         g_model.engaged = 1.0;
-        EFMI_STEP(FixedWingOuterLoop, &g_model);
+        EFMI_STEP(Vehicles_Cubs2_OuterLoop, &g_model);
         if (ctx->estimator_control_steps < UINT32_MAX) {
           ctx->estimator_control_steps++;
         }

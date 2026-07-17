@@ -75,9 +75,15 @@ jobs:
         with:
           determinate: false
 
+      - name: Update west workspace
+        working-directory: cerebri_cubs2
+        run: nix $NIX_FLAGS run .#west-update
+
       - name: Run Rumoca fmt/lint
         working-directory: cerebri_cubs2
-        run: nix $NIX_FLAGS run .#rumoca-check
+        run: |
+          export CUBS2_MODELICA_MODELS_ROOT="$PWD/.devenv/state/west/models/modelica_models"
+          nix $NIX_FLAGS run .#rumoca-check
 
   build:
     name: Build ${{ matrix.target.name }}
@@ -151,8 +157,8 @@ jobs:
           path: cerebri_cubs2/${{ matrix.target.log }}
           if-no-files-found: warn
 
-  modelica_flight_test:
-    name: Modelica Flight Test
+  model_qualification:
+    name: Model qualification
     needs:
       - build
     runs-on: ubuntu-latest
@@ -176,31 +182,29 @@ jobs:
         working-directory: cerebri_cubs2
         run: nix $NIX_FLAGS run .#west-update
 
-      - name: Run Modelica flight test
+      - name: Run model-level qualification
         working-directory: cerebri_cubs2
-        run: nix $NIX_FLAGS run .#flight-sil-test
+        run: nix $NIX_FLAGS run .#model-qualification
 
-      - name: Upload Modelica flight test artifacts
+      - name: Upload model qualification artifacts
         id: upload-flight-artifacts
         if: always()
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: cerebri-cubs2-flight-sil
+          name: cerebri-cubs2-model-qualification
           path: |
-            cerebri_cubs2/artifacts/flight/*.csv
-            cerebri_cubs2/artifacts/flight/*.png
-            cerebri_cubs2/artifacts/flight/*.html
-            cerebri_cubs2/artifacts/flight/*.md
+            cerebri_cubs2/.devenv/state/west/models/modelica_models/artifacts/vehicles/cubs2/*
           if-no-files-found: error
 
-      - name: Publish Modelica flight test summary
+      - name: Publish model qualification summary
         if: always()
         working-directory: cerebri_cubs2
         env:
           FLIGHT_ARTIFACT_URL: ${{ steps.upload-flight-artifacts.outputs.artifact-url }}
         run: |
-          if [ -f artifacts/flight/flight-summary.md ]; then
-            cat artifacts/flight/flight-summary.md >> "$GITHUB_STEP_SUMMARY"
+          summary=.devenv/state/west/models/modelica_models/artifacts/vehicles/cubs2/qualification-summary.md
+          if [ -f "$summary" ]; then
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
             printf '\n' >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -211,7 +215,7 @@ jobs:
   zephyr_sil_flight_test:
     name: Zephyr SIL Flight Test
     needs:
-      - modelica_flight_test
+      - model_qualification
       - release_tag
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -322,11 +326,11 @@ jobs:
 
   release:
     name: Publish release binaries
-    if: ${{ needs.release_tag.outputs.enabled == 'true' && needs.build.result == 'success' && needs.modelica_flight_test.result == 'success' && needs.zephyr_sil_flight_test.result == 'success' }}
+    if: ${{ needs.release_tag.outputs.enabled == 'true' && needs.build.result == 'success' && needs.model_qualification.result == 'success' && needs.zephyr_sil_flight_test.result == 'success' }}
     needs:
       - release_tag
       - build
-      - modelica_flight_test
+      - model_qualification
       - zephyr_sil_flight_test
     runs-on: ubuntu-latest
     permissions:

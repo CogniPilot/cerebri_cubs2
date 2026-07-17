@@ -4,7 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     rumoca-src = {
-      url = "github:CogniPilot/rumoca/v0.9.20";
+      url = "github:CogniPilot/rumoca/149c2ff3939937f5a1345db600830ae4a9a83ca9";
       flake = false;
     };
   };
@@ -349,7 +349,7 @@
                 fi
               done
 
-              modelica_root="''${CUBS2_MODELICA_ROOT:-$workspace/models/vendor/CMM-v0.0.2}"
+              modelica_root="''${CUBS2_MODELICA_MODELS_ROOT:-$workspace/models/modelica_models}"
               if [ ! -d "$modelica_root" ]; then
                 printf 'error: missing Modelica library: %s\n' "$modelica_root" >&2
                 missing=1
@@ -368,7 +368,7 @@
 
               export WEST_PYTHON="''${WEST_PYTHON:-${pythonEnv}/bin/python}"
               export CUBS2_RUMOCA_PYTHON="''${CUBS2_RUMOCA_PYTHON:-${pythonEnv}/bin/python}"
-              export CUBS2_MODELICA_ROOT="''${CUBS2_MODELICA_ROOT:-$workspace/models/vendor/CMM-v0.0.2}"
+              export CUBS2_MODELICA_MODELS_ROOT="''${CUBS2_MODELICA_MODELS_ROOT:-$workspace/models/modelica_models}"
               export CUBS2_CEREBRI_MODULES_ROOT="''${CUBS2_CEREBRI_MODULES_ROOT:-$workspace/modules/lib/cerebri_lockstep}"
               export CUBS2_ZROS_ROOT="''${CUBS2_ZROS_ROOT:-$workspace/modules/lib/zros}"
               export CUBS2_CSYN_ROOT="''${CUBS2_CSYN_ROOT:-$workspace/modules/lib/csyn}"
@@ -615,50 +615,54 @@
             exec env -u ZEPHYR_BASE -u WEST_TOPDIR west update "$@"
           '';
 
-          rumoca-check = pkgs.writeShellApplication {
-            name = "rumoca-check";
-            runtimeInputs = [
-              pkgs.coreutils
-              pythonEnv
-            ];
-            text = ''
-              model="''${1:-src/FixedWingOuterLoop.mo}"
-
-              if [ ! -f "$model" ]; then
-                printf 'error: Modelica file not found: %s\n' "$model" >&2
-                exit 1
-              fi
-
-              exec "${pythonEnv}/bin/python" - "$model" <<'PY'
-              from pathlib import Path
-              import sys
-
-              import rumoca as rum
-
-              model = Path(sys.argv[1])
-              source = model.read_text(encoding="utf-8")
-              formatted = rum.format(source, filename=str(model))
-              if formatted != source:
-                  print(f"error: Modelica formatting differs: {model}", file=sys.stderr)
-                  raise SystemExit(1)
-
-              try:
-                  rum.Session().load(str(model), model=model.stem)
-              except rum.RumocaError as exc:
-                  print(f"{model}: error: {exc}", file=sys.stderr)
-                  raise SystemExit(1) from exc
-              PY
-            '';
-          };
-
-          cubs2-flight-sil-test = mkWestApp "cubs2-flight-sil-test" [ flightPythonEnv ] ''
+          rumoca-check = mkWestApp "rumoca-check" [ pythonEnv ] ''
             ${commonScript}
 
             app="$(zephyr_app_find_app)"
             zephyr_app_export_common "$app"
             zephyr_app_require_workspace "$app"
-            cd "$app"
-            exec "${flightPythonEnv}/bin/python" tests/flight/run_cubs2_flight_sil.py "$@"
+            modelica_root="$CUBS2_MODELICA_MODELS_ROOT"
+            model="''${1:-$modelica_root/Vehicles/Cubs2/OuterLoop.mo}"
+            model_name="''${2:-Vehicles.Cubs2.OuterLoop}"
+
+            if [ ! -f "$model" ]; then
+              printf 'error: Modelica file not found: %s\n' "$model" >&2
+              exit 1
+            fi
+
+            exec "${pythonEnv}/bin/python" - "$model" "$model_name" "$modelica_root" <<'PY'
+            from pathlib import Path
+            import sys
+
+            import rumoca as rum
+
+            model = Path(sys.argv[1])
+            model_name = sys.argv[2]
+            modelica_root = sys.argv[3]
+            source = model.read_text(encoding="utf-8")
+            formatted = rum.format(source, filename=str(model))
+            if formatted != source:
+                print(f"error: Modelica formatting differs: {model}", file=sys.stderr)
+                raise SystemExit(1)
+
+            try:
+                rum.Session(roots=[modelica_root]).load(str(model), model=model_name)
+            except rum.RumocaError as exc:
+                print(f"{model}: error: {exc}", file=sys.stderr)
+                raise SystemExit(1) from exc
+            PY
+          '';
+
+          cubs2-model-qualification = mkWestApp "cubs2-model-qualification" [ flightPythonEnv ] ''
+            ${commonScript}
+
+            app="$(zephyr_app_find_app)"
+            zephyr_app_export_common "$app"
+            zephyr_app_require_workspace "$app"
+            cd "$CUBS2_MODELICA_MODELS_ROOT"
+            export MODELICA_MODELS_ROOT="$CUBS2_MODELICA_MODELS_ROOT"
+            exec "${flightPythonEnv}/bin/python" \
+              Vehicles/Cubs2/Qualification/run_qualification.py "$@"
           '';
 
           cubs2-native-sim-sil-test = pkgs.writeShellApplication {
@@ -793,7 +797,7 @@
               cubs2-flash
               cubs2-menuconfig
               cubs2-west-update
-              cubs2-flight-sil-test
+              cubs2-model-qualification
               cubs2-native-sim-sil-test
               cubs2-native-sim-sil-run
               cubs2-native-sim-64-sil-test
@@ -814,7 +818,7 @@
             cubs2-flash
             cubs2-menuconfig
             cubs2-west-update
-            cubs2-flight-sil-test
+            cubs2-model-qualification
             cubs2-native-sim-sil-test
             cubs2-native-sim-sil-run
             cubs2-native-sim-64-sil-test
@@ -840,8 +844,8 @@
             runner=${runner}/bin/cubs2-native-sim-sil-run
             grep -F 'app="$(zephyr_app_find_app)"' "$runner"
             grep -F 'zephyr_app_export_common "$app"' "$runner"
-            grep -F 'export CUBS2_MODELICA_ROOT=' "$runner"
-            grep -F '$workspace/models/vendor/CMM-v0.0.2' "$runner"
+            grep -F 'export CUBS2_MODELICA_MODELS_ROOT=' "$runner"
+            grep -F '$workspace/models/modelica_models' "$runner"
             touch "$out"
           '';
         }
@@ -895,10 +899,10 @@
             meta.description = "Run Rumoca formatting and lint checks";
           };
 
-          flight-sil-test = {
+          model-qualification = {
             type = "app";
-            program = "${packages.cubs2-flight-sil-test}/bin/cubs2-flight-sil-test";
-            meta.description = "Run staged CUBS2 flight SIL checks and generate a track plot";
+            program = "${packages.cubs2-model-qualification}/bin/cubs2-model-qualification";
+            meta.description = "Run staged CUBS2 model-level flight qualification";
           };
 
           native-sim-sil-test = {
@@ -1006,7 +1010,7 @@
                 export ZEPHYR_BASE="$PWD/zephyr"
               fi
 
-              echo "${appDisplayName} Nix shell: cubs2-west-update, cubs2-build, cubs2-build-native-sim, cubs2-build-native-sim-64, cubs2-flight-sil-test, cubs2-native-sim-sil-test, cubs2-native-sim-64-sil-test, cubs2-native-sim-sil-run, cubs2-native-sim-64-sil-run, csyn, cubs2-flash"
+              echo "${appDisplayName} Nix shell: cubs2-west-update, cubs2-model-qualification, cubs2-build, cubs2-build-native-sim, cubs2-build-native-sim-64, cubs2-native-sim-sil-test, cubs2-native-sim-64-sil-test, cubs2-native-sim-sil-run, cubs2-native-sim-64-sil-run, csyn, cubs2-flash"
             '';
           };
         }

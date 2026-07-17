@@ -12,3 +12,4 @@ __pycache__
 result
 result-*
 artifacts/
+/tools/fastdyn_bridge/target/
