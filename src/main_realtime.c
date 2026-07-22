@@ -473,7 +473,7 @@ static void update_navigation_target(struct control_context *ctx,
   ctx->navigation_target = (synapse_topic_NavigationTargetData_t){
       .timestamp_us = now_us,
       .altitude_error_m = (float)g_model.guidance_altitudeError,
-      .airspeed_error_m_s = (float)(g_model.guidance_setpoints_speed -
+      .airspeed_error_m_s = (float)(g_model.guidance_estimate_speed -
                                     g_model.estimator_estimate_speed),
       .xtrack_error_m = (float)g_model.guidance_crossTrackError,
       /* Manual flight publishes the integral-free preview: what auto would fly.
